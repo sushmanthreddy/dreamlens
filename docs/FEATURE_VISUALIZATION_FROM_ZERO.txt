@@ -1,0 +1,726 @@
+FEATURE VISUALIZATION FROM ZERO
+================================
+
+Purpose of this document
+------------------------
+
+This document explains what the project is doing without assuming that you
+already understand neural networks, Fourier transforms, optimization, or
+activation atlases.
+
+The single most important sentence is:
+
+    The neural network stays fixed, and the program changes an image until an
+    internal part of the network responds strongly.
+
+Everything else is an implementation of that sentence.
+
+
+PART 1: WHAT A COMPUTER IMAGE REALLY IS
+=======================================
+
+A computer does not see a photograph as a dog, a road, or a face. It sees a
+rectangular collection of numbers.
+
+An RGB image has three color channels:
+
+    red
+    green
+    blue
+
+A 160 by 160 image therefore contains:
+
+    160 rows
+    160 columns
+    3 color values at every location
+
+In PyTorch, one image is usually stored with shape:
+
+    [1, 3, 160, 160]
+
+The dimensions mean:
+
+    1     one image in the batch
+    3     red, green, and blue
+    160   image height
+    160   image width
+
+If pixel values are stored between zero and one, then a pixel might contain:
+
+    red   0.80
+    green 0.30
+    blue  0.10
+
+That pixel will look mostly red or orange.
+
+
+PART 2: WHAT A NEURAL NETWORK DOES
+==================================
+
+A neural network is a very large mathematical function. It receives image
+numbers and repeatedly transforms them.
+
+The simplified flow is:
+
+    image
+      to early layers
+      to middle layers
+      to deep layers
+      to final prediction
+
+An early layer might respond strongly to:
+
+    a dark-to-light edge
+    a certain color difference
+    a small repeating texture
+
+A middle layer may combine those simple responses into:
+
+    curves
+    corners
+    circular textures
+    fur-like patterns
+    repeated object parts
+
+A deep layer may combine them into more complicated evidence related to:
+
+    eyes
+    wheels
+    heads
+    animal textures
+    buildings
+    object arrangements
+
+These descriptions are only examples. A channel is not guaranteed to have one
+clean human meaning.
+
+
+PART 3: WHAT AN ACTIVATION IS
+=============================
+
+Every internal layer produces numbers. Those numbers are called activations.
+
+Suppose an internal convolutional layer produces a tensor with shape:
+
+    [1, 128, 20, 20]
+
+This means:
+
+    one input image
+    128 channels
+    a 20 by 20 response grid inside every channel
+
+A channel is one group of responses. Channel 17 means the eighteenth group,
+because programming indices normally begin at zero.
+
+If channel 17 produces large values for an image, we say that channel 17 was
+strongly activated by the image.
+
+The final model prediction may say "dog," but feature visualization does not
+need to use that prediction. It can inspect channel 17 inside a middle layer.
+
+
+PART 4: THE RESEARCH QUESTION
+=============================
+
+After training a neural network, its millions of learned numbers are difficult
+to understand by reading them directly.
+
+Feature visualization asks:
+
+    What kind of input would make this internal feature respond strongly?
+
+For example:
+
+    What image makes channel 17 of layer2 respond strongly?
+
+The network does not answer with words. It only produces activation numbers.
+
+The program therefore performs an experiment:
+
+    create an image
+    show it to the model
+    measure channel 17
+    change the image in a direction that increases channel 17
+    repeat
+
+After many repetitions, the resulting image provides evidence about what the
+selected channel prefers.
+
+This technique is called feature visualization by activation maximization.
+
+
+PART 5: WHY THE IMAGE CAN BE TRAINED
+====================================
+
+During normal neural-network training:
+
+    images stay fixed
+    model weights change
+
+During feature visualization:
+
+    model weights stay fixed
+    generated image parameters change
+
+The fixed model behaves like a judge. It gives a higher or lower activation
+score. The generated image is the contestant that changes in response.
+
+The model is not learning a new object. The image is learning how to excite the
+existing model.
+
+
+PART 6: THE SIMPLE DIRECT-PIXEL METHOD
+======================================
+
+The simplest possible generated image has one adjustable number for every
+pixel and color.
+
+The optimizer could independently change:
+
+    red at row 0, column 0
+    green at row 0, column 0
+    blue at row 0, column 0
+    red at row 0, column 1
+    and so on
+
+This works mathematically. Unfortunately, neural networks can respond strongly
+to tiny patterns that humans find meaningless.
+
+Independent pixel optimization can produce:
+
+    isolated bright dots
+    checkerboards
+    sharp high-frequency noise
+    patterns that exploit the model but do not help a human understand it
+
+The activation can be large even when the result looks like visual static.
+
+Researchers therefore use image parameterizations that make useful structures
+easier for optimization to discover.
+
+
+PART 7: THE FOURIER IDEA
+=======================
+
+An image can be described in two different coordinate systems.
+
+The pixel description says:
+
+    what color exists at each location
+
+The Fourier description says:
+
+    how much of each wave pattern exists in the image
+
+Examples of wave patterns include:
+
+    a slow brightness change from left to right
+    a broad vertical stripe
+    a broad horizontal stripe
+    a diagonal pattern
+    a medium repeating texture
+    a very small rapidly repeating texture
+
+Adding many waves together can reproduce an image.
+
+This is similar to sound. A complicated sound can be described as a mixture of
+low and high musical frequencies. An image can be described as a mixture of
+slow and fast two-dimensional visual frequencies.
+
+
+PART 8: FFT AND INVERSE FFT ARE OPPOSITE DIRECTIONS
+===================================================
+
+A forward Fourier transform performs:
+
+    pixel image
+      to Fourier coefficients
+
+An inverse Fourier transform performs:
+
+    Fourier coefficients
+      to pixel image
+
+The current generated-image program does not begin with pixels. It creates
+Fourier coefficients directly.
+
+Therefore the program does not need a forward transform for generated images.
+
+Its flow is:
+
+    create random Fourier coefficients directly
+      to inverse Fourier transform
+      to pixel image
+
+This is why you see inverse FFT but no forward FFT.
+
+
+PART 9: WHAT "RANDOM FOURIER COEFFICIENTS" MEANS
+=================================================
+
+The program first asks NumPy for random numbers.
+
+NumPy is creating the randomness. FFT is not creating the randomness.
+
+The program decides to interpret pairs of random numbers as:
+
+    real part of a Fourier coefficient
+    imaginary part of a Fourier coefficient
+
+A Fourier coefficient is a complex number:
+
+    real part plus imaginary part times i
+
+The real and imaginary parts together determine the strength and phase of a
+wave.
+
+Phase roughly describes where the wave pattern is positioned in its cycle.
+
+At this point the program owns a collection of wave controls, not visible
+pixels.
+
+
+PART 10: WHY LOW FREQUENCIES RECEIVE MORE INFLUENCE
+===================================================
+
+Low visual frequencies describe structures that change slowly across space.
+
+They create:
+
+    large regions
+    broad curves
+    smooth transitions
+    large stripes
+
+High visual frequencies change quickly across space.
+
+They create:
+
+    tiny repeated lines
+    sharp dots
+    checkerboards
+    pixel-scale noise
+
+The program calculates a scale for each frequency. Low frequencies receive a
+larger scale and high frequencies receive a smaller relative scale.
+
+This does not forbid fine detail. It changes which kinds of structures are easy
+for optimization to create.
+
+This preference is called an inductive bias. It is a design preference built
+into the image representation.
+
+
+PART 11: THE EXACT MOMENT AN IMAGE IS CREATED
+=============================================
+
+After creating complex coefficients and scaling them, the program calls the
+two-dimensional inverse real FFT.
+
+Conceptually, inverse FFT performs:
+
+    take wave one multiplied by coefficient one
+    add wave two multiplied by coefficient two
+    add wave three multiplied by coefficient three
+    continue for all stored frequencies
+    produce a spatial grid of values
+
+Before inverse FFT:
+
+    the tensor describes waves
+
+After inverse FFT:
+
+    the tensor describes values at image locations
+
+The result is called a latent image because its three channels have not yet
+been converted into ordinary red, green, and blue.
+
+
+PART 12: COLOR CONVERSION
+=========================
+
+The project uses a color-correlation matrix.
+
+Natural red, green, and blue values are not completely independent. Brightness
+changes often affect all three channels, while other directions represent
+color differences.
+
+The matrix mixes three latent channels into RGB channels.
+
+After this mixing, the values can still be any real number. The program applies
+sigmoid.
+
+Sigmoid maps every real number into the range between zero and one.
+
+Now the generated tensor is a valid visible RGB image.
+
+The complete image construction is:
+
+    random trainable numbers
+      to real and imaginary pairs
+      to complex Fourier coefficients
+      to frequency scaling
+      to inverse FFT
+      to latent spatial image
+      to RGB color mixing
+      to sigmoid
+      to visible image
+
+
+PART 13: PREPARING THE IMAGE FOR RESNET18
+=========================================
+
+The visible image contains RGB values between zero and one.
+
+ResNet18 was trained with ImageNet normalization. Every color channel is
+adjusted using a training mean and standard deviation.
+
+This normalization does not make the saved image more or less valid. It only
+converts the image into the numerical convention expected by ResNet18.
+
+
+PART 14: WHY RANDOM TRANSFORMS ARE APPLIED
+==========================================
+
+On every optimization iteration, the program may slightly rotate, translate,
+stretch, or shrink the image shown to the model.
+
+Without transforms, the optimizer may find a fragile trick that works only at
+one exact location, scale, or angle.
+
+With transforms, a useful pattern must continue activating the feature under
+small changes.
+
+The final stored image parameters are not permanently rotated. A temporary
+transformed view is sent to the model during each iteration.
+
+
+PART 15: THE FORWARD MODEL PASS
+===============================
+
+The transformed normalized image travels through ResNet18.
+
+A forward hook records the selected internal layer.
+
+For maximize, the program selects one requested channel from that captured
+tensor.
+
+The final class prediction is not used.
+
+
+PART 16: THE MAXIMIZE SCORE
+===========================
+
+The successful notebook uses the spatial L2 norm for channel visualization.
+
+The program squares every selected activation, adds the squares, and takes the
+square root.
+
+A larger norm means the complete spatial channel response is stronger.
+
+The optimizer is designed to minimize a loss, but the research goal is to
+maximize activation. The program therefore defines:
+
+    loss equals negative activation score
+
+If the score increases from two to sixteen, the loss decreases from negative
+two to negative sixteen.
+
+
+PART 17: BACKPROPAGATION THROUGH THE IMAGE
+==========================================
+
+The loss depends on the channel activation.
+
+The channel activation depends on the model input.
+
+The model input depends on the generated pixels.
+
+The generated pixels depend on inverse FFT and the Fourier coefficients.
+
+Backpropagation follows this dependency chain in reverse:
+
+    loss
+      to selected activation
+      to internal model operations
+      to model input pixels
+      to color conversion
+      to inverse FFT
+      to Fourier coefficients
+
+PyTorch calculates how every Fourier coefficient should change to reduce the
+loss.
+
+Inverse FFT is differentiable, so gradients can travel through it.
+
+The model weights remain fixed. Only the Fourier coefficients are passed to the
+optimizer.
+
+
+PART 18: THE OPTIMIZER UPDATE
+=============================
+
+The gradient for a parameter says whether increasing that parameter would
+increase or decrease the loss.
+
+AdamW keeps a moving average of gradients and squared gradients. This smooths
+the updates and adapts their size.
+
+Gradient clipping prevents one unusually large gradient from causing an
+unstable jump.
+
+After the update, the Fourier coefficients are slightly different. Inverse FFT
+therefore constructs a slightly different image on the next iteration.
+
+
+PART 19: COMPLETE MAXIMIZE STORY
+================================
+
+The maximize workflow proceeds as follows.
+
+First, load a pretrained frozen ResNet18.
+
+Second, select layer2 and channel 17.
+
+Third, create random trainable Fourier coefficients.
+
+Fourth, repeat the following process forty-two times:
+
+    reconstruct an RGB image with inverse FFT
+    normalize the image
+    randomly transform the model's view
+    run ResNet18
+    capture layer2
+    select channel 17
+    calculate the channel norm
+    negate the score to create a loss
+    backpropagate to Fourier coefficients
+    update Fourier coefficients with AdamW
+
+Finally, reconstruct and save the visible image.
+
+The resulting image is evidence about what input structures make channel 17
+respond strongly under this particular image parameterization and transform
+policy.
+
+
+PART 20: COMPLETE CARICATURE STORY
+==================================
+
+Caricature asks a different question:
+
+    What internal features does the model see in this original image, and what
+    generated image expresses those same features more strongly?
+
+There are two paths.
+
+The original path is:
+
+    original RGB image
+      to normalization
+      to random paired transform
+      to frozen ResNet18
+      to target activation
+
+The generated path is:
+
+    random Fourier coefficients
+      to inverse FFT
+      to generated RGB image
+      to normalization
+      to the same paired transform
+      to frozen ResNet18
+      to current activation
+
+The same transform is applied to both paths so their spatial features remain
+comparable.
+
+The program calculates a dot product between current and target activations.
+
+A large positive dot product means the generated features point in a similar
+direction and have strong magnitude.
+
+The program applies an amplification power. A power slightly above one rewards
+increasingly strong aligned features.
+
+The loss is negative because AdamW minimizes.
+
+Backpropagation travels only through the generated path. The original path is
+measured without gradients.
+
+The original pixels never change. The model weights never change. Only the
+generated Fourier coefficients change.
+
+After forty-five steps, the generated image often contains dream-like repeated
+versions of features the model detected in the original.
+
+
+PART 21: COMPLETE ACTIVATION ATLAS STORY
+========================================
+
+An activation atlas begins with many real images instead of one selected
+channel or one reference image.
+
+For every real image, the program runs the fixed model and captures one layer.
+
+A convolutional activation has channels and spatial positions. The program
+turns every spatial position into one channel vector.
+
+For example, an activation with 256 channels and a ten by ten spatial grid
+produces one hundred vectors, each containing 256 values.
+
+Vectors from many images are joined.
+
+The vectors live in a high-dimensional space that cannot be drawn directly.
+The educational implementation uses principal component analysis.
+
+It first normalizes vector lengths, subtracts their average, and uses singular
+value decomposition to find two important directions.
+
+Every high-dimensional activation vector is projected onto those two
+directions, producing an x and y coordinate.
+
+The two-dimensional area is divided into grid cells.
+
+Vectors in the same occupied cell are averaged. The average represents the
+activation direction common to that region.
+
+For every occupied cell, the program creates a new icon from random Fourier
+coefficients.
+
+The icon path is:
+
+    random Fourier coefficients
+      to inverse FFT
+      to RGB icon
+      to frozen model
+      to current center activation
+      to comparison with the cell's average activation direction
+
+Backpropagation changes the Fourier coefficients until the icon activates the
+cell direction.
+
+Finally, all icons are placed into their corresponding positions on one canvas.
+
+Real-image activation collection does not use Fourier transforms. Fourier
+parameterization is used only when generating the synthetic icons.
+
+
+PART 22: EXACTLY WHERE FOURIER IS USED IN EACH WORKFLOW
+=======================================================
+
+Maximize:
+
+    Fourier coefficients are created directly.
+    Inverse FFT creates the generated image on every iteration.
+    No forward FFT is needed.
+
+Caricature:
+
+    The original image goes directly to the model without FFT.
+    The generated image begins as Fourier coefficients.
+    Inverse FFT creates the generated image on every iteration.
+
+Activation atlas:
+
+    Real dataset images go directly to the model without FFT.
+    PCA and grid grouping do not use FFT.
+    Every generated atlas icon begins as Fourier coefficients.
+    Inverse FFT creates every icon on every optimization iteration.
+
+
+PART 23: WHEN A FORWARD FFT WOULD BE NEEDED
+===========================================
+
+A forward FFT would be needed if the program started with an existing pixel
+image and wanted to convert that image into Fourier coefficients.
+
+That flow would be:
+
+    existing pixels
+      to forward FFT
+      to Fourier coefficients
+
+The current maximize and generated caricature paths skip this step because they
+create coefficients directly.
+
+
+PART 24: WHAT THE RESULT DOES AND DOES NOT PROVE
+================================================
+
+A feature visualization does show an input that strongly excites a selected
+feature.
+
+It does not prove that the feature has one simple human label.
+
+A channel may be polysemantic, meaning it responds to several different kinds
+of patterns.
+
+The result is influenced by:
+
+    the selected model
+    the selected layer
+    the selected channel
+    the score function
+    Fourier frequency scaling
+    color parameterization
+    random transforms
+    random seed
+    learning rate
+    number of optimization steps
+
+The generated image is therefore an experimental probe, not a perfect literal
+photograph of what the neuron "sees."
+
+
+PART 25: WHY THIS RESEARCH IS USEFUL
+====================================
+
+Feature visualization can help researchers:
+
+    inspect what internal representations prefer
+    compare early and deep layers
+    find texture-biased or shape-biased behavior
+    discover repeated or unexpected model features
+    compare models before and after training changes
+    identify features that respond to undesirable artifacts
+    communicate internal model behavior visually
+
+Caricature can reveal which aspects of a real image dominate a model's internal
+representation.
+
+Activation atlases can summarize patterns across many real inputs rather than
+studying only one channel or one image.
+
+
+PART 26: FINAL MENTAL MODEL
+===========================
+
+Think of the model as a frozen measuring instrument.
+
+Think of an internal activation as the measurement.
+
+Think of Fourier coefficients as adjustable wave controls used to draw a
+generated image.
+
+Think of inverse FFT as the machine that combines those waves into pixels.
+
+Think of backpropagation as the calculation that tells every wave control how
+it influenced the measurement.
+
+Think of AdamW as the mechanism that applies small, stable changes to the wave
+controls.
+
+The cycle is:
+
+    adjust waves
+      to construct image
+      to measure model response
+      to calculate error
+      to trace responsibility backward
+      to adjust waves again
+
+The model remains fixed throughout the experiment.
+

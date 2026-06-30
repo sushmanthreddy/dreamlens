@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dreamlens"
+version = "0.1.0"
+description = "PyTorch tools for activation atlases, feature visualization, and image amplification."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "DreamLens Contributors" }
+]
+dependencies = [
+  "numpy>=1.23",
+  "pillow>=9.0",
+  "torch>=2.0"
+]
+
+[project.optional-dependencies]
+atlas = [
+  "umap-learn>=0.5"
+]
+examples = [
+  "torchvision>=0.15",
+  "matplotlib>=3.5"
+]
+dev = [
+  "pytest>=8.0"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
