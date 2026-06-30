@@ -26,7 +26,8 @@ Model requirement: torch.nn.Module whose selected layer returns a tensor
 Supported layer output shapes: [N, C], [N, L, C], [N, C, H, W], [N, H, W, C]
 Best model family: CNN image models with NCHW feature maps
 Native only: do not import external feature-visualization packages
-MACO: intentionally not implemented
+Xplique feature visualization: fully ported in dreamlens.features_visualizations
+MaCo: supported for RGB and dataset-backed grayscale models
 Smoke test: PYTHONPATH=src pytest -q tests/test_smoke.py
 Notebook: examples/native_dreamlens_results.ipynb
 Notebook workflows: batched channel rendering, reference caricature
@@ -48,6 +49,7 @@ Notebook outputs: results/native_dreamlens_notebook
 | `src/dreamlens/model_wrappers.py` | `ModelEnsemble` and `ParameterNoise` |
 | `src/dreamlens/preprocessing.py` | Image conversion and ImageNet normalization helpers |
 | `src/dreamlens/transforms.py` | Transform utilities for optimization and paired amplification |
+| `src/dreamlens/features_visualizations/` | Native PyTorch Xplique port: objectives, optimize, MaCo, losses, FFT preconditioning, transforms, regularizers |
 
 ## Supported Model Types
 
@@ -613,13 +615,13 @@ The self-contained notebook uses:
 From `activation-atlas-pytorch/`:
 
 ```bash
-PYTHONPATH=src pytest -q tests/test_smoke.py
+PYTHONPATH=src pytest -q
 ```
 
 From the repo root used by Codex in this workspace:
 
 ```bash
-PYTHONPATH=activation-atlas-pytorch/src pytest -q activation-atlas-pytorch/tests/test_smoke.py
+PYTHONPATH=activation-atlas-pytorch/src pytest -q activation-atlas-pytorch/tests
 ```
 
 Run `examples/native_dreamlens_results.ipynb` from the repository root or the
@@ -628,7 +630,8 @@ depend on a separate runner.
 
 ## Known Limits
 
-- MACO is intentionally not implemented.
+- MaCo without a supplied dataset needs one initial download of the reference
+  ImageNet spectrum; grayscale MaCo always needs a representative dataset.
 - Pixel-identical reproduction of any external example image is not guaranteed.
 - Very deep/high-channel layers can need more steps and more compute.
 - CPU runs work but can be slow for large images, many channels, or high steps.

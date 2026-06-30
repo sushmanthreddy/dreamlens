@@ -15,12 +15,28 @@ class LayerInfo:
 
 
 def resolve_module(model, layer):
-    """Resolve a module name or module object inside a PyTorch model."""
+    """Resolve a module name, leaf-module index, or module object."""
 
     if isinstance(layer, torch.nn.Module):
         return layer
+    if isinstance(layer, int):
+        modules = [
+            module
+            for name, module in model.named_modules()
+            if name and not any(module.children())
+        ]
+        try:
+            return modules[layer]
+        except IndexError as exc:
+            raise IndexError(
+                "Layer index {} is out of range for {} leaf modules.".format(
+                    layer, len(modules)
+                )
+            ) from exc
     if not isinstance(layer, str):
-        raise TypeError("layer must be a module name string or a torch.nn.Module")
+        raise TypeError(
+            "layer must be a module name string, leaf-module index, or torch.nn.Module"
+        )
     if hasattr(model, "get_submodule"):
         try:
             return model.get_submodule(layer)

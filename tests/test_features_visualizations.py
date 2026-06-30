@@ -1,0 +1,298 @@
+import numpy as np
+import pytest
+import torch
+
+from dreamlens import (
+    Objective,
+    compose_transformations,
+    cosine_similarity,
+    fft_image,
+    fft_to_rgb,
+    get_fft_scale,
+    init_maco_buffer,
+    l1_reg,
+    l2_reg,
+    l_inf_reg,
+    maco,
+    maco_image_parametrization,
+    optimize,
+    pad,
+    random_blur,
+    random_flip,
+    random_jitter,
+    random_scale,
+    total_variation_reg,
+)
+
+
+class FeatureVizModel(torch.nn.Module):
+    input_shape = (3, 16, 16)
+
+    def __init__(self):
+        super().__init__()
+        self.early = torch.nn.Conv2d(3, 4, 3, padding=1)
+        self.relu = torch.nn.ReLU(inplace=True)
+        self.features = torch.nn.Conv2d(4, 3, 3, padding=1)
+        self.pool = torch.nn.AdaptiveAvgPool2d((1, 1))
+        self.logits = torch.nn.Linear(3, 5)
+
+    def forward(self, inputs):
+        outputs = self.relu(self.early(inputs))
+        outputs = self.relu(self.features(outputs))
+        return self.logits(self.pool(outputs).flatten(1))
+
+
+class GrayscaleFeatureVizModel(torch.nn.Module):
+    input_shape = (1, 8, 8)
+
+    def __init__(self):
+        super().__init__()
+        self.conv = torch.nn.Conv2d(1, 2, 3, padding=1)
+        self.pool = torch.nn.AdaptiveAvgPool2d((1, 1))
+        self.logits = torch.nn.Linear(2, 3)
+
+    def forward(self, inputs):
+        return self.logits(self.pool(torch.relu(self.conv(inputs))).flatten(1))
+
+
+def test_cosine_similarity_matches_reference_values():
+    vector = torch.tensor([[10.0, 20.0, 30.0]])
+    collinear = torch.tensor([[1.0, 2.0, 3.0]])
+    orthogonal = torch.zeros_like(vector)
+    opposite = torch.tensor([[-0.01, -0.02, -0.03]])
+
+    assert torch.allclose(cosine_similarity(vector, collinear), torch.tensor([1.0]))
+    assert torch.allclose(cosine_similarity(vector, orthogonal), torch.tensor([0.0]))
+    assert torch.allclose(cosine_similarity(vector, opposite), torch.tensor([-1.0]))
+
+
+def test_regularizers_match_reference_values():
+    vector = torch.tensor([[[[-4.0, 4.0]]]])
+    assert torch.allclose(l1_reg(1.0)(vector), torch.tensor([4.0]))
+    assert torch.allclose(l2_reg(2.0)(vector), torch.tensor([8.0]))
+    assert torch.allclose(l_inf_reg(10.0)(vector), torch.tensor([40.0]))
+
+    image = torch.tensor([[[[0.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 1.0]]]])
+    assert torch.allclose(total_variation_reg(1.0)(image), torch.tensor([10.0]))
+
+
+def test_blur_and_pad_match_reference_kernel_and_layout():
+    images = torch.zeros(3, 3, 3, 3)
+    images[:, 1, 1, 1] = 1.0
+    images[:, 2, 2, 2] = 1.0
+    blurred = random_blur(kernel_size=3, sigma_range=(1.0, 1.0))(images)
+
+    kernel_sum = np.exp(0) + np.exp(-0.5) * 4 + np.exp(-1) * 4
+    c0, c1, c2 = np.exp(0) / kernel_sum, np.exp(-0.5) / kernel_sum, np.exp(-1) / kernel_sum
+    expected_green = torch.tensor(
+        [[c2, c1, c2], [c1, c0, c1], [c2, c1, c2]], dtype=torch.float32
+    )
+    assert torch.allclose(blurred[0], blurred[1])
+    assert torch.allclose(blurred[0, 1], expected_green, atol=1e-6)
+
+    padded = pad(2, 0.0)(torch.ones(3, 3, 2, 2))
+    assert padded.shape == (3, 3, 6, 6)
+    assert torch.all(padded[:, :, 2:4, 2:4] == 1)
+    assert torch.all(padded[:, :, :2] == 0)
+
+
+def test_even_blur_kernel_uses_reference_same_padding_alignment():
+    images = torch.zeros(1, 3, 3, 3)
+    images[:, :, 1, 1] = 1.0
+    blurred = random_blur(kernel_size=2, sigma_range=(1.0, 1.0))(images)
+    expected = torch.tensor(
+        [[0.25, 0.25, 0.0], [0.25, 0.25, 0.0], [0.0, 0.0, 0.0]]
+    )
+    assert blurred.shape == images.shape
+    assert torch.allclose(blurred[0, 0], expected)
+    assert torch.allclose(blurred[0, 1], expected)
+    assert torch.allclose(blurred[0, 2], expected)
+
+
+def test_transform_composition_preserves_gradients():
+    inputs = torch.rand(2, 3, 16, 16, requires_grad=True)
+    transform = compose_transformations(
+        [
+            pad(2),
+            random_jitter(2),
+            random_scale((0.95, 1.05)),
+            random_flip(),
+        ]
+    )
+    result = transform(inputs)
+    result.sum().backward()
+    assert inputs.grad is not None
+    assert torch.isfinite(inputs.grad).all()
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [(2, 3, 8, 8), (2, 1, 64, 64), (2, 3, 15, 17), (1, 1, 32, 24)],
+)
+def test_fourier_preconditioning_returns_requested_nchw_shape(shape):
+    _, _, height, width = shape
+    buffer = fft_image(shape)
+    scale = get_fft_scale(height, width)
+    image = fft_to_rgb(shape, buffer, scale)
+    assert image.shape == shape
+    assert torch.isfinite(image).all()
+
+
+def test_objective_factories_and_cartesian_combinations():
+    model = FeatureVizModel()
+    layer_objective = Objective.layer(model, "logits")
+    direction_objective = Objective.direction(model, -1, torch.rand(5))
+    channel_objective = Objective.channel(model, "early", [0, 1])
+    neuron_objective = Objective.neuron(model, "features", [0, 1, 2])
+    combined = layer_objective + direction_objective + channel_objective + neuron_objective
+
+    configured, objective_function, names, input_shape = combined.compile()
+    try:
+        outputs = configured(torch.rand(6, 3, 16, 16))
+        scores = objective_function(outputs)
+    finally:
+        configured.close()
+
+    assert input_shape == (6, 3, 16, 16)
+    assert len(names) == 6
+    assert names[0] == (
+        "Layer#logits & Direction#logits_0 & Channel#early_0 & Neuron#features_0"
+    )
+    assert names[-1].endswith("Channel#early_1 & Neuron#features_2")
+    assert scores.shape == (6,)
+    assert torch.isfinite(scores).all()
+
+
+def test_objective_requires_explicit_shape_when_model_has_no_metadata():
+    model = torch.nn.Sequential(
+        torch.nn.Conv2d(3, 2, 3, padding=1),
+        torch.nn.AdaptiveAvgPool2d(1),
+        torch.nn.Flatten(),
+    )
+    objective = Objective.channel(model, 0, 0)
+    with pytest.raises(ValueError, match="input_shape"):
+        objective.compile()
+
+    configured, _, _, shape = objective.compile(input_shape=(3, 8, 8))
+    configured.close()
+    assert shape == (1, 3, 8, 8)
+
+
+@pytest.mark.parametrize("use_fft", [True, False])
+def test_optimize_supports_fft_pixel_regularizers_saves_and_warmup(use_fft):
+    model = FeatureVizModel()
+    objective = Objective.channel(model, "early", [0, 1])
+    dummy = torch.nn.Parameter(torch.zeros(()))
+    optimizer = torch.optim.SGD([dummy], lr=0.05)
+    preprocess_calls = []
+
+    def preprocess(images):
+        preprocess_calls.append(tuple(images.shape))
+        return images
+
+    images, names = optimize(
+        objective,
+        optimizer=optimizer,
+        nb_steps=4,
+        use_fft=use_fft,
+        regularizers=[l1_reg(0.01), l2_reg(0.01), total_variation_reg(0.001)],
+        warmup_steps=1,
+        custom_shape=(20, 18),
+        transformations=[],
+        save_every=2,
+        preprocess=preprocess,
+    )
+
+    assert len(images) == 2
+    assert images[-1].shape == (2, 3, 20, 18)
+    assert names == ["Channel#early_0", "Channel#early_1"]
+    assert torch.isfinite(images[-1]).all()
+    assert model.relu.inplace is True
+    assert all(parameter.requires_grad for parameter in model.parameters())
+    assert preprocess_calls == [(2, 3, 16, 16)] * 5
+
+
+def test_init_maco_buffer_and_image_parameterization_rgb_and_grayscale():
+    rgb_dataset = [torch.randn(2, 3, 12, 10), torch.randn(1, 3, 12, 10)]
+    gray_dataset = [torch.randn(2, 1, 12, 10), torch.randn(1, 1, 12, 10)]
+
+    rgb_magnitude, rgb_phase = init_maco_buffer((3, 16, 14), dataset=rgb_dataset)
+    gray_magnitude, gray_phase = init_maco_buffer((16, 14, 1), dataset=gray_dataset)
+    rgb = maco_image_parametrization(rgb_magnitude, rgb_phase, (-1, 1))
+    gray = maco_image_parametrization(gray_magnitude, gray_phase, (0, 1))
+
+    assert rgb_magnitude.shape == rgb_phase.shape == (3, 16, 8)
+    assert gray_magnitude.shape == gray_phase.shape == (1, 16, 8)
+    assert rgb.shape == (3, 16, 14)
+    assert gray.shape == (1, 16, 14)
+    assert -1 <= float(rgb.min()) <= float(rgb.max()) <= 1
+    assert 0 <= float(gray.min()) <= float(gray.max()) <= 1
+
+
+def test_init_maco_buffer_uses_cached_reference_spectrum(tmp_path, monkeypatch):
+    spectrum_dir = tmp_path / "spectrums"
+    spectrum_dir.mkdir()
+    np.save(
+        spectrum_dir / "spectrum_decorrelated.npy",
+        np.abs(np.random.default_rng(0).normal(size=(3, 8, 5))).astype("float32"),
+    )
+    monkeypatch.setenv("DREAMLENS_CACHE", str(tmp_path))
+
+    magnitude, phase = init_maco_buffer((3, 12, 10))
+
+    assert magnitude.shape == phase.shape == (3, 12, 6)
+    assert torch.isfinite(magnitude).all()
+    with pytest.raises(ValueError, match="dataset"):
+        init_maco_buffer((1, 12, 10), data_format="CHW")
+
+
+@pytest.mark.parametrize("kind", ["neuron", "direction", "channel"])
+def test_maco_optimizes_all_reference_objective_kinds(kind):
+    model = FeatureVizModel()
+    if kind == "neuron":
+        objective = Objective.neuron(model, "logits", 0)
+    elif kind == "direction":
+        objective = Objective.direction(model, "logits", torch.nn.functional.one_hot(torch.tensor(1), 5).float())
+    else:
+        objective = Objective.channel(model, "early", 0)
+    dataset = [torch.randn(2, 3, 16, 16), torch.randn(1, 3, 16, 16)]
+
+    image, transparency = maco(
+        objective,
+        maco_dataset=dataset,
+        nb_steps=2,
+        nb_crops=2,
+        custom_shape=(16, 16),
+        noise_intensity=0.01,
+        values_range=(-127, 127),
+    )
+
+    assert image.shape == (3, 16, 16)
+    assert transparency.shape == image.shape
+    assert torch.isfinite(image).all()
+    assert torch.isfinite(transparency).all()
+    assert float(image.min()) >= -127
+    assert float(image.max()) <= 127
+
+
+def test_maco_grayscale_and_single_objective_validation():
+    model = GrayscaleFeatureVizModel()
+    dataset = [torch.randn(2, 1, 8, 8)]
+    image, transparency = maco(
+        Objective.neuron(model, "logits", 0),
+        maco_dataset=dataset,
+        nb_steps=2,
+        nb_crops=0,
+        custom_shape=(8, 8),
+    )
+    assert image.shape == transparency.shape == (1, 8, 8)
+
+    rgb_model = FeatureVizModel()
+    combined = Objective.channel(rgb_model, "early", [0, 1])
+    with pytest.raises(AssertionError, match="one objective"):
+        maco(
+            combined,
+            maco_dataset=[torch.randn(2, 3, 16, 16)],
+            nb_steps=1,
+            custom_shape=(16, 16),
+        )

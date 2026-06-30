@@ -12,6 +12,11 @@ The three main workflows are:
 | `caricature()` | What features does the model see in an original image, and how can they be amplified? |
 | `activation_atlas()` | What feature groups appear across many real images? |
 
+DreamLens also includes a native PyTorch port of Xplique's complete
+`features_visualizations` API: composable `Objective` targets, Fourier/pixel
+`optimize`, MaCo, stochastic transforms, image regularizers, losses, and
+preconditioning helpers.
+
 ## Setup
 
 From the repository root:
@@ -116,6 +121,46 @@ result = visualizer.maximize(
 result.save("channel_17.png")
 ```
 
+## Xplique-compatible feature visualization
+
+The functional API mirrors `xplique.features_visualizations`, with tensors in
+native PyTorch NCHW/CHW layout:
+
+```python
+import torch
+from dreamlens.features_visualizations import Objective, optimize
+
+model = model.eval()
+objective = (
+    Objective.channel(model, "layer2.1.conv2", [3, 17], input_shape=(3, 224, 224))
+    + 0.25 * Objective.layer(model, "layer3.0.conv1", input_shape=(3, 224, 224))
+)
+
+saved_images, names = optimize(
+    objective,
+    nb_steps=256,
+    custom_shape=(512, 512),
+    transformations="standard",
+)
+
+# saved_images[-1] is [number_of_objective_combinations, 3, 512, 512]
+```
+
+MaCo is available through `dreamlens.maco` or
+`dreamlens.features_visualizations.maco`. When no dataset is supplied, the
+reference ImageNet magnitude spectrum is downloaded and cached. Grayscale
+models require a representative NCHW dataset, matching Xplique's requirement.
+
+See [`docs/XPLIQUE_FEATURE_VISUALIZATIONS.md`](docs/XPLIQUE_FEATURE_VISUALIZATIONS.md)
+for the complete ported surface and the explicit PyTorch/Keras shape difference.
+
+The self-contained PyTorch API tutorial is
+[`Feature_Visualization_Getting_started_PyTorch.ipynb`](examples/Feature_Visualization_Getting_started_PyTorch.ipynb).
+It imports DreamLens normally, loads a pretrained torchvision ResNet18, explains
+the objective and optimization APIs, runs all 1024 steps, and saves the raw
+canvas, display image, and trajectory under
+`results/feature_visualization_getting_started_pytorch/`.
+
 Use the learning notebooks for the full editable transform configuration,
 reproducible seeds, plots, and clean-score evaluation.
 
@@ -143,5 +188,5 @@ directly from coefficients.
 Run the smoke tests with:
 
 ```bash
-PYTHONPATH=src pytest -q tests/test_smoke.py
+PYTHONPATH=src pytest -q
 ```
