@@ -120,6 +120,12 @@ at construction time, unlike Keras optimizers.
 
 ## MaCo
 
+DreamLens implements MaCo from Fel et al., [“Unlocking Feature Visualization
+for Deeper Networks with MAgnitude Constrained
+Optimization”](https://arxiv.org/abs/2306.06805), natively in PyTorch. The
+Fourier magnitude remains fixed, the phase is optimized, and the accumulated
+absolute image gradient is returned as a spatial-importance map.
+
 ```python
 from dreamlens import Objective, maco
 

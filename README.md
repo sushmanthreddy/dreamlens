@@ -146,10 +146,64 @@ saved_images, names = optimize(
 # saved_images[-1] is [number_of_objective_combinations, 3, 512, 512]
 ```
 
-MaCo is available through `dreamlens.maco` or
-`dreamlens.features_visualizations.maco`. When no dataset is supplied, the
-reference ImageNet magnitude spectrum is downloaded and cached. Grayscale
-models require a representative NCHW dataset, matching Xplique's requirement.
+## Native PyTorch MaCo
+
+DreamLens includes a native PyTorch implementation of **MaCo (MAgnitude
+Constrained Optimization)** from Fel et al.,
+[“Unlocking Feature Visualization for Deeper Networks with MAgnitude
+Constrained Optimization” (NeurIPS 2023)](https://arxiv.org/abs/2306.06805).
+
+MaCo keeps a natural-image Fourier magnitude spectrum fixed and optimizes only
+its phase. This constrains the generated visualization toward natural-image
+statistics without using a learned generative prior. DreamLens also accumulates
+the absolute input gradient during optimization and returns it as the spatial
+importance/transparency map described in the paper.
+
+<img src="results/feature_visualization_getting_started_pytorch/maco_toucan_panel.png" width="100%" alt="Native PyTorch MaCo Toucan feature visualization, spatial importance map, and overlay">
+
+| Setting | README result |
+| --- | ---: |
+| Model / target | torchvision ResNet18 / ImageNet class 96 (Toucan) |
+| Canvas | `512 × 512` RGB |
+| Steps / crops per step | `128` / `8` |
+| Optimized variable | Fourier phase only |
+| Fixed variable | Reference ImageNet Fourier magnitude |
+| Returned tensors | image `[3, 512, 512]`, transparency `[3, 512, 512]` |
+
+```python
+import torch
+from torchvision.models import ResNet18_Weights, resnet18
+
+from dreamlens.features_visualizations import Objective, maco
+
+model = resnet18(weights=ResNet18_Weights.DEFAULT).eval()
+
+def imagenet_preprocess(images):
+    mean = images.new_tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+    std = images.new_tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+    return (images - mean) / std
+
+objective = Objective.neuron(
+    model, "fc", 96, input_shape=(3, 224, 224)
+)
+
+image, transparency = maco(
+    objective,
+    nb_steps=128,
+    nb_crops=8,
+    noise_intensity=0.08,
+    custom_shape=(512, 512),
+    values_range=(0, 1),
+    preprocess=imagenet_preprocess,
+)
+```
+
+This implementation is PyTorch end to end: phase reconstruction uses
+`torch.fft`, crops use differentiable `torch.nn.functional.grid_sample`, and
+optimization uses `torch.optim.NAdam`. With no `maco_dataset`, the reference
+ImageNet magnitude spectrum is downloaded and cached. A representative NCHW
+dataset can be supplied to compute a domain-specific magnitude; grayscale MaCo
+requires one.
 
 See [`docs/XPLIQUE_FEATURE_VISUALIZATIONS.md`](docs/XPLIQUE_FEATURE_VISUALIZATIONS.md)
 for the complete ported surface and the explicit PyTorch/Keras shape difference.
