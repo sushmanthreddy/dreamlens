@@ -4,18 +4,19 @@ DreamLens is a native PyTorch toolkit for understanding what neural-network
 layers respond to. It keeps the pretrained model fixed and optimizes generated
 images using feedback from internal activations.
 
-The three main workflows are:
+The main workflows share one root `FeatureVisualizer`:
 
 | Workflow | Question |
 | --- | --- |
-| `maximize()` | What image makes a selected layer/channel respond strongly? |
-| `caricature()` | What features does the model see in an original image, and how can they be amplified? |
+| `visualize(..., method="maximize")` | What image makes a layer, channel, neuron, class, or direction respond strongly? |
+| `visualize(..., method="maco")` | What does the same target look like with natural-image magnitude fixed and phase optimized? |
+| `visualize(..., method="caricature")` | What features does the model see in an original image, and how can they be amplified? |
 | `activation_atlas()` | What feature groups appear across many real images? |
 
-DreamLens also includes a native PyTorch port of Xplique's complete
-`features_visualizations` API: composable `Objective` targets, Fourier/pixel
-`optimize`, MaCo, stochastic transforms, image regularizers, losses, and
-preconditioning helpers.
+The root package also preserves the complete native-PyTorch feature-
+visualization surface: composable compatibility objectives, Fourier/pixel
+optimization, MaCo, stochastic transforms, regularizers, losses, and
+preconditioning helpers. There is no parallel feature-visualization subpackage.
 
 ## Setup
 
@@ -32,7 +33,9 @@ the first time they are used.
 
 | Notebook | What it teaches | Saved output |
 | --- | --- | --- |
+| [`Feature_Visualization_Getting_started_PyTorch.ipynb`](examples/Feature_Visualization_Getting_started_PyTorch.ipynb) | One root API for all targets, classical maximize, MaCo, and caricature | `results/feature_visualization_getting_started_pytorch/` |
 | [`learn_dreamlens_maximize.ipynb`](examples/learn_dreamlens_maximize.ipynb) | Target, render config, Fourier canvas, optimization, score evaluation | `learning_outputs/dreamlens_maximize_notebook/` |
+| [`learn_dreamlens_maco.ipynb`](examples/learn_dreamlens_maco.ipynb) | Fixed magnitude, trainable phase, crop schedules, and transparency maps | `learning_outputs/dreamlens_maco_notebook/` |
 | [`learn_dreamlens_caricature.ipynb`](examples/learn_dreamlens_caricature.ipynb) | Original/generated paths, paired transforms, feature amplification | `learning_outputs/dreamlens_caricature_notebook/` |
 | [`native_dreamlens_results.ipynb`](examples/native_dreamlens_results.ipynb) | Complete reproducible gallery with multiple channels and caricatures | `results/native_dreamlens_notebook/` |
 
@@ -44,8 +47,8 @@ To use a learning notebook:
 4. View the image and measurements in the notebook; the image is also saved to
    the output directory shown above.
 
-Both learning notebooks include their latest verified result near the top, so
-you can inspect the expected output before rerunning them.
+The dedicated learning notebooks include embedded verified outputs, so you can
+inspect the expected result before rerunning them.
 
 ## Verified maximize result
 
@@ -87,22 +90,21 @@ from Fourier noise and is optimized separately; it is not a normal image filter.
 ```python
 from torchvision.models import ResNet18_Weights, resnet18
 
-from dreamlens import FeatureTarget
-from dreamlens import FeatureVisualizer
-from dreamlens import RenderConfig
-from dreamlens import TransformConfig
+from dreamlens import FeatureTarget, FeatureVisualizer
+from dreamlens import MacoConfig, RenderConfig, TransformConfig
 
 model = resnet18(weights=ResNet18_Weights.DEFAULT).eval()
 visualizer = FeatureVisualizer(model, device="cpu", normalize=True)
 
-target = FeatureTarget(
-    layer=model.layer2[1].conv2,
-    channel=17,
+target = FeatureTarget.for_channel(
+    model.layer2[1].conv2,
+    17,
     reduction="norm",
 )
 
-result = visualizer.maximize(
-    target=target,
+result = visualizer.visualize(
+    target,
+    method="maximize",
     config=RenderConfig.reference(
         width=224,
         height=224,
@@ -119,32 +121,42 @@ result = visualizer.maximize(
 )
 
 result.save("channel_17.png")
+
+# The exact same target can use fixed-magnitude, phase-only MaCo.
+maco_result = visualizer.visualize(
+    target,
+    method="maco",
+    config=MacoConfig(
+        width=512,
+        height=512,
+        input_shape=(3, 224, 224),
+        steps=128,
+        crops=8,
+    ),
+)
+maco_result.save("channel_17_maco.png")
+maco_result.save_transparency("channel_17_importance.png")
 ```
 
-## Xplique-compatible feature visualization
+## One target model
 
-The functional API mirrors `xplique.features_visualizations`, with tensors in
-native PyTorch NCHW/CHW layout:
+`FeatureTarget` is shared by classical maximize and MaCo:
 
 ```python
 import torch
-from dreamlens.features_visualizations import Objective, optimize
+from dreamlens import FeatureTarget
 
-model = model.eval()
-objective = (
-    Objective.channel(model, "layer2.1.conv2", [3, 17], input_shape=(3, 224, 224))
-    + 0.25 * Objective.layer(model, "layer3.0.conv1", input_shape=(3, 224, 224))
-)
-
-saved_images, names = optimize(
-    objective,
-    nb_steps=256,
-    custom_shape=(512, 512),
-    transformations="standard",
-)
-
-# saved_images[-1] is [number_of_objective_combinations, 3, 512, 512]
+layer = FeatureTarget.for_layer("layer3.1.conv2")
+channel = FeatureTarget.for_channel("layer3.1.conv2", 17, reduction="norm")
+neuron = FeatureTarget.for_neuron("layer3.1.conv2", 2500)
+image_class = FeatureTarget.for_class(96, layer="fc")
+direction = FeatureTarget.for_direction("fc", torch.eye(1000)[96])
 ```
+
+For classical rendering, the equivalent convenience methods are
+`maximize_layer`, `maximize_channel`, `maximize_neuron`, `maximize_class`, and
+`maximize_direction`. The lower-level Xplique-compatible functional API remains
+available for backward compatibility, but is not required by the root workflow.
 
 ## Native PyTorch MaCo
 
@@ -159,22 +171,22 @@ statistics without using a learned generative prior. DreamLens also accumulates
 the absolute input gradient during optimization and returns it as the spatial
 importance/transparency map described in the paper.
 
-<img src="results/feature_visualization_getting_started_pytorch/maco_toucan_panel.png" width="100%" alt="Native PyTorch MaCo Toucan feature visualization, spatial importance map, and overlay">
+<img src="results/feature_visualization_getting_started_pytorch/root_maco_toucan_panel.png" width="100%" alt="Root DreamLens native PyTorch MaCo Toucan feature visualization, spatial importance map, and overlay">
 
-| Setting | README result |
+| Setting | Executed notebook result |
 | --- | ---: |
 | Model / target | torchvision ResNet18 / ImageNet class 96 (Toucan) |
 | Canvas | `512 × 512` RGB |
 | Steps / crops per step | `128` / `8` |
 | Optimized variable | Fourier phase only |
-| Fixed variable | Reference ImageNet Fourier magnitude |
+| Fixed variable | Magnitude computed from the checked-in high-resolution PyTorch Hub sample |
 | Returned tensors | image `[3, 512, 512]`, transparency `[3, 512, 512]` |
+| Clean Toucan logit | `6.8193` |
 
 ```python
-import torch
 from torchvision.models import ResNet18_Weights, resnet18
 
-from dreamlens.features_visualizations import Objective, maco
+from dreamlens import FeatureTarget, FeatureVisualizer, MacoConfig
 
 model = resnet18(weights=ResNet18_Weights.DEFAULT).eval()
 
@@ -183,36 +195,43 @@ def imagenet_preprocess(images):
     std = images.new_tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
     return (images - mean) / std
 
-objective = Objective.neuron(
-    model, "fc", 96, input_shape=(3, 224, 224)
+visualizer = FeatureVisualizer(model, preprocess=imagenet_preprocess)
+target = FeatureTarget.for_class(96, layer="fc")
+result = visualizer.visualize(
+    target,
+    method="maco",
+    config=MacoConfig(
+        width=512,
+        height=512,
+        input_shape=(3, 224, 224),
+        steps=128,
+        crops=8,
+        noise_intensity=0.08,
+        values_range=(0, 1),
+    ),
 )
 
-image, transparency = maco(
-    objective,
-    nb_steps=128,
-    nb_crops=8,
-    noise_intensity=0.08,
-    custom_shape=(512, 512),
-    values_range=(0, 1),
-    preprocess=imagenet_preprocess,
-)
+image = result.as_chw()
+transparency = result.transparency_chw()
 ```
 
 This implementation is PyTorch end to end: phase reconstruction uses
 `torch.fft`, crops use differentiable `torch.nn.functional.grid_sample`, and
-optimization uses `torch.optim.NAdam`. With no `maco_dataset`, the reference
-ImageNet magnitude spectrum is downloaded and cached. A representative NCHW
-dataset can be supplied to compute a domain-specific magnitude; grayscale MaCo
-requires one.
+optimization uses `torch.optim.NAdam`. With no `maco_dataset`, DreamLens uses a
+cached ImageNet magnitude or attempts the upstream reference download. For
+reproducible offline runs, pass a representative NCHW dataset; the notebooks
+use the checked-in high-resolution
+[PyTorch Hub dog photograph](https://github.com/pytorch/hub/blob/master/images/dog.jpg).
+Grayscale MaCo always requires a dataset.
 
-See [`docs/XPLIQUE_FEATURE_VISUALIZATIONS.md`](docs/XPLIQUE_FEATURE_VISUALIZATIONS.md)
-for the complete ported surface and the explicit PyTorch/Keras shape difference.
+See [`docs/FEATURE_VISUALIZATION_API.md`](docs/FEATURE_VISUALIZATION_API.md)
+for the complete root API and tensor conventions.
 
-The self-contained PyTorch API tutorial is
+The executed self-contained PyTorch API tutorial is
 [`Feature_Visualization_Getting_started_PyTorch.ipynb`](examples/Feature_Visualization_Getting_started_PyTorch.ipynb).
-It imports DreamLens normally, loads a pretrained torchvision ResNet18, explains
-the objective and optimization APIs, runs all 1024 steps, and saves the raw
-canvas, display image, and trajectory under
+It uses only root `dreamlens` imports, loads a pretrained torchvision ResNet18,
+and runs classical maximize, MaCo, and caricature directly in its cells. It
+saves the images and comparison panels under
 `results/feature_visualization_getting_started_pytorch/`.
 
 Use the learning notebooks for the full editable transform configuration,

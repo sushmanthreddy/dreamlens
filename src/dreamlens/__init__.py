@@ -17,10 +17,20 @@ from .image_parameters import (
     ReferenceMaskedCanvas,
     PixelCanvas,
     MaskedCanvas,
+    fft_2d_freq,
+    fft_image,
+    fft_to_rgb,
+    get_fft_scale,
+    init_maco_buffer,
+    maco_image_parametrization,
+    recorrelate_colors,
+    to_valid_grayscale,
+    to_valid_rgb,
 )
 from .layers import LayerInfo, list_layers, probe_layer_outputs, supported_layers
 from .model_wrappers import ModelEnsemble, ParameterNoise
 from .objectives import (
+    Objective,
     PerSampleObjective,
     ChannelObjective,
     FeatureTarget,
@@ -29,12 +39,22 @@ from .objectives import (
     channel_objective,
     mean_activation_objective,
     feature_target,
+    cosine_similarity,
+    dot_cossim,
+    l1_reg,
+    l2_reg,
+    l_inf_reg,
+    total_variation_reg,
 )
 from .optimization import (
     AmplifyConfig,
+    MacoConfig,
     OptimizationResult,
     RenderConfig,
     TransformConfig,
+    maco,
+    maco_optimisation_step,
+    optimize,
 )
 from .preprocessing import (
     identity_preprocess,
@@ -42,34 +62,15 @@ from .preprocessing import (
     imagenet_normalize,
 )
 from .render import ImageParameterization, render_channels, render_icons, render_neurons
-from .features_visualizations import (
-    Objective,
+from .transforms import (
     compose_transformations,
-    cosine_similarity,
-    dot_cossim,
-    fft_2d_freq,
-    fft_image,
-    fft_to_rgb,
     generate_standard_transformations,
-    get_fft_scale,
-    init_maco_buffer,
-    l1_reg,
-    l2_reg,
-    l_inf_reg,
-    maco,
-    maco_image_parametrization,
-    maco_optimisation_step,
-    optimize,
     pad,
     random_blur,
     random_blur_grayscale,
     random_flip,
     random_jitter,
     random_scale,
-    recorrelate_colors,
-    to_valid_grayscale,
-    to_valid_rgb,
-    total_variation_reg,
 )
 
 __all__ = [
@@ -90,6 +91,7 @@ __all__ = [
     "FeatureVisualizer",
     "ImageParameterization",
     "LayerInfo",
+    "MacoConfig",
     "MaskedCanvas",
     "ModelEnsemble",
     "ParameterNoise",

@@ -19,37 +19,38 @@ Package path: activation-atlas-pytorch/src/dreamlens
 Main public import: from dreamlens import ...
 Main class: FeatureVisualizer
 Main atlas APIs: collect_activations, activation_atlas, aligned_activation_atlas
-Main visualization APIs: maximize, maximize_channels, synthesize, caricature, amplify
-Main configs: RenderConfig, TransformConfig, AmplifyConfig
+Main visualization API: visualize (maximize, maco, caricature methods)
+Convenience APIs: maximize, maco, caricature, amplify, batched maximize_* methods
+Main target: FeatureTarget (layer, channel, flattened neuron/class, direction)
+Main configs: RenderConfig, TransformConfig, MacoConfig, AmplifyConfig
 Main result object: OptimizationResult
 Model requirement: torch.nn.Module whose selected layer returns a tensor
 Supported layer output shapes: [N, C], [N, L, C], [N, C, H, W], [N, H, W, C]
 Best model family: CNN image models with NCHW feature maps
 Native only: do not import external feature-visualization packages
-Xplique feature visualization: fully ported in dreamlens.features_visualizations
+Feature visualization: one root FeatureVisualizer/FeatureTarget architecture
 MaCo: supported for RGB and dataset-backed grayscale models
 Smoke test: PYTHONPATH=src pytest -q tests/test_smoke.py
-Notebook: examples/native_dreamlens_results.ipynb
-Notebook workflows: batched channel rendering, reference caricature
-Notebook outputs: results/native_dreamlens_notebook
+Unified notebook: examples/Feature_Visualization_Getting_started_PyTorch.ipynb
+Notebook workflows: classical maximize, MaCo, reference caricature
+Notebook outputs: results/feature_visualization_getting_started_pytorch
 ```
 
 ## Core File Map
 
 | File | Owns |
 | --- | --- |
-| `src/dreamlens/feature_visualizer.py` | High-level optimization engine: feature maximization, channel rendering, amplification, caricature, layer capture |
-| `src/dreamlens/objectives.py` | Target/objective definitions: `FeatureTarget`, `ChannelObjective`, `PerSampleObjective`, amplification objectives |
-| `src/dreamlens/optimization.py` | Config and result dataclasses: `RenderConfig`, `TransformConfig`, `AmplifyConfig`, `OptimizationResult` |
-| `src/dreamlens/image_parameters.py` | Trainable image/canvas classes: FFT, pixel, masked, image-initialized, batched canvases |
+| `src/dreamlens/feature_visualizer.py` | Root engine: classical maximization, MaCo entry point, channel/neuron/class/direction rendering, amplification, caricature, layer capture |
+| `src/dreamlens/objectives.py` | Canonical targets, composable compatibility objectives, direction losses, amplification objectives, and image regularizers |
+| `src/dreamlens/optimization.py` | Configs/results plus classical composable optimization and the exact MaCo kernel |
+| `src/dreamlens/image_parameters.py` | Root canvases plus shared Fourier/MaCo preconditioning |
 | `src/dreamlens/activations.py` | Activation collection from real inputs |
 | `src/dreamlens/atlas.py` | Activation atlas and aligned activation atlas pipelines |
 | `src/dreamlens/render.py` | Lower-level icon/channel/neuron rendering utilities |
 | `src/dreamlens/layers.py` | Layer resolution, layer listing, supported-layer probing |
 | `src/dreamlens/model_wrappers.py` | `ModelEnsemble` and `ParameterNoise` |
 | `src/dreamlens/preprocessing.py` | Image conversion and ImageNet normalization helpers |
-| `src/dreamlens/transforms.py` | Transform utilities for optimization and paired amplification |
-| `src/dreamlens/features_visualizations/` | Native PyTorch Xplique port: objectives, optimize, MaCo, losses, FFT preconditioning, transforms, regularizers |
+| `src/dreamlens/transforms.py` | Root, paired, and robust feature-visualization transforms |
 
 ## Supported Model Types
 
@@ -262,8 +263,9 @@ from dreamlens import FeatureTarget, FeatureVisualizer, RenderConfig
 
 visualizer = FeatureVisualizer(model, device="cpu", normalize=True, quiet=True)
 
-result = visualizer.maximize(
-    FeatureTarget(layer=model.layer3[1].conv2, channel=17),
+result = visualizer.visualize(
+    FeatureTarget.for_channel(model.layer3[1].conv2, 17),
+    method="maximize",
     config=RenderConfig.reference(width=160, height=160, steps=100),
 )
 
@@ -290,12 +292,15 @@ DreamLens visualizes more than whole layers.
 
 | Target Type | API Pattern |
 | --- | --- |
-| Whole layer | `FeatureTarget(layer=...)` |
-| CNN channel | `FeatureTarget(layer=..., channel=17)` |
-| CNN channel at spatial position | `FeatureTarget(layer=..., channel=17, position=(y, x))` |
-| Linear/classifier unit | `FeatureTarget(layer=model.fc, channel=281)` |
-| Sequence token/channel | `FeatureTarget(layer=..., channel=32, position=5)` |
+| Whole layer | `FeatureTarget.for_layer(layer)` |
+| CNN channel | `FeatureTarget.for_channel(layer, 17)` |
+| CNN channel at spatial position | `FeatureTarget.for_channel(layer, 17, position=(y, x))` |
+| Flattened neuron | `FeatureTarget.for_neuron(layer, 2500)` |
+| Classifier class/logit | `FeatureTarget.for_class(281, layer=model.fc)` |
+| Activation direction | `FeatureTarget.for_direction(layer, tensor)` |
+| Sequence token/channel | `FeatureTarget.for_channel(layer, 32, position=5)` |
 | Many channels | `visualizer.maximize_channels(...)` |
+| Many neurons/classes/directions | `maximize_neurons`, `maximize_classes`, `maximize_directions` |
 | Multiple targets in one image | `visualizer.maximize([FeatureTarget(...), FeatureTarget(...)])` |
 | Suppressed/negative feature | `FeatureTarget(..., sign=-1.0)` |
 | Custom objective | `visualizer.synthesize(..., custom_func=...)` |
@@ -307,6 +312,39 @@ Supported reductions for target values:
 ```text
 mean, sum, max, norm
 ```
+
+`FeatureTarget` is the single target representation for both classical
+maximization and MaCo. Use the same object with either method:
+
+```python
+from dreamlens import MacoConfig
+
+target = FeatureTarget.for_class(96, layer="fc")
+
+classic = visualizer.visualize(
+    target,
+    method="maximize",
+    config=RenderConfig.reference(width=224, height=224, steps=160),
+)
+maco = visualizer.visualize(
+    target,
+    method="maco",
+    config=MacoConfig(
+        width=512,
+        height=512,
+        input_shape=(3, 224, 224),
+        steps=128,
+        crops=8,
+    ),
+)
+
+maco.save("maco.png")
+maco.save_transparency("maco_importance.png")
+```
+
+MaCo keeps its Fourier magnitude fixed and optimizes phase. With
+`maco_dataset=None`, it uses the cached/downloaded ImageNet magnitude. Passing
+an iterable of NCHW batches computes a fixed domain-specific magnitude instead.
 
 ## Batched Channel Rendering
 
@@ -330,10 +368,10 @@ Internally this uses:
 - `PerSampleObjective`
 - one objective per batch item
 
-Current limitation:
+Current limitation for batched channel/neuron/class/direction rendering:
 
 ```text
-maximize_channels(...) supports config.attempts == 1
+the batched maximize_* methods support config.attempts == 1
 ```
 
 ## Custom Objectives
@@ -369,7 +407,8 @@ Main API:
 ```python
 from dreamlens import AmplifyConfig
 
-result = visualizer.caricature(
+result = visualizer.visualize(
+    method="caricature",
     image=input_image,
     layers=[model.layer3[1].conv2],
     power=1.15,
@@ -388,7 +427,8 @@ input image
 -> generated image matches and amplifies the input activations
 ```
 
-`caricature(...)` is a convenience wrapper around `amplify(...)`.
+`visualize(method="caricature", ...)` dispatches to `caricature(...)`, which is
+a convenience wrapper around `amplify(...)`.
 
 `amplify(...)` supports:
 
@@ -636,7 +676,8 @@ depend on a separate runner.
 - Very deep/high-channel layers can need more steps and more compute.
 - CPU runs work but can be slow for large images, many channels, or high steps.
 - `activation_atlas(...)` expects activation arrays shaped `[samples, channels]`.
-- `maximize_channels(...)` currently requires `RenderConfig.attempts == 1`.
+- Batched `maximize_channels/neurons/classes/directions(...)` currently require
+  `RenderConfig.attempts == 1`.
 - Custom models may need custom preprocessing or a wrapper around `forward`.
 - Non-tensor layer outputs must be adapted or wrapped before visualization.
 
@@ -646,6 +687,7 @@ For quick CPU checks:
 
 ```python
 RenderConfig.reference(width=96, height=96, steps=8)
+MacoConfig(width=96, height=96, input_shape=(3, 224, 224), steps=8, crops=2)
 AmplifyConfig.reference(steps=8, lr=9e-3)
 ```
 
@@ -653,6 +695,7 @@ For useful small outputs:
 
 ```python
 RenderConfig.reference(width=160, height=160, steps=42)
+MacoConfig(width=256, height=256, input_shape=(3, 224, 224), steps=64, crops=8)
 AmplifyConfig.reference(steps=45, lr=9e-3)
 ```
 

@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import torch
 
 from dreamlens import atlas
@@ -17,6 +18,7 @@ from dreamlens import (
     ReferenceAmplificationObjective,
     PixelCanvas,
     MaskedCanvas,
+    MacoConfig,
     ModelEnsemble,
     ParameterNoise,
     RenderConfig,
@@ -237,6 +239,135 @@ def test_feature_visualizer_maximize_target_api():
     assert image.shape == (16, 16, 3)
     assert len(result.losses) == 2
     assert np.isfinite(image).all()
+
+
+def test_feature_target_rejects_ambiguous_target_selection():
+    with pytest.raises(ValueError, match="only one"):
+        FeatureTarget(layer="conv", channel=0, neuron=0)
+    with pytest.raises(ValueError, match="position"):
+        FeatureTarget(layer="conv", neuron=0, position=(1, 1))
+    with pytest.raises(ValueError, match="reduction"):
+        FeatureTarget(layer="conv", reduction="median")
+
+
+def test_feature_target_class_factories_cover_every_target_kind():
+    direction = torch.tensor([1.0, 0.0, 0.0])
+    targets = [
+        FeatureTarget.for_layer("conv"),
+        FeatureTarget.for_channel("conv", 2, position=(1, 1)),
+        FeatureTarget.for_neuron("conv", 7),
+        FeatureTarget.for_class(3, layer="fc"),
+        FeatureTarget.for_direction("fc", direction),
+    ]
+
+    assert targets[0].reduction == "norm"
+    assert targets[1].channel == 2 and targets[1].position == (1, 1)
+    assert targets[2].neuron == 7
+    assert targets[3].layer == "fc" and targets[3].neuron == 3
+    assert torch.equal(targets[4].direction, direction)
+
+
+def test_feature_visualizer_root_convenience_targets():
+    model = ToyClassifier()
+    visualizer = FeatureVisualizer(model, device="cpu", normalize=False, quiet=True)
+    config = RenderConfig(
+        width=16,
+        height=16,
+        steps=1,
+        lr=0.01,
+        transform=TransformConfig(transforms=[]),
+    )
+    direction = torch.nn.functional.one_hot(torch.tensor(2), 5).float()
+
+    results = [
+        visualizer.maximize_layer("conv", config=config),
+        visualizer.maximize_channel("conv", 1, config=config),
+        visualizer.maximize_neuron("conv", 2, config=config),
+        visualizer.maximize_class(3, layer="fc", config=config),
+        visualizer.maximize_direction("fc", direction, config=config),
+        visualizer.visualize(
+            FeatureTarget(layer="fc", neuron=1),
+            method="maximize",
+            config=config,
+        ),
+    ]
+
+    for result in results:
+        assert result.as_chw().shape == (3, 16, 16)
+        assert len(result.losses) == 1
+        assert torch.isfinite(result.as_chw()).all()
+
+
+def test_feature_visualizer_root_batched_targets():
+    model = ToyClassifier()
+    visualizer = FeatureVisualizer(model, device="cpu", normalize=False, quiet=True)
+    config = RenderConfig(
+        width=16,
+        height=16,
+        steps=1,
+        lr=0.01,
+        transform=TransformConfig(transforms=[]),
+    )
+    directions = [
+        torch.nn.functional.one_hot(torch.tensor(index), 5).float()
+        for index in (0, 1)
+    ]
+
+    neuron_result = visualizer.maximize_neurons("conv", [0, 1], config=config)
+    class_result = visualizer.maximize_classes([0, 1], layer="fc", config=config)
+    direction_result = visualizer.maximize_directions(
+        "fc",
+        directions,
+        config=config,
+    )
+
+    for result in (neuron_result, class_result, direction_result):
+        assert result.as_nchw().shape == (2, 3, 16, 16)
+        assert len(result.losses) == 1
+        assert torch.isfinite(result.as_nchw()).all()
+
+
+@pytest.mark.parametrize("target_kind", ["layer", "channel", "neuron", "class", "direction"])
+def test_feature_visualizer_root_maco_targets(target_kind, tmp_path):
+    model = ToyClassifier()
+    visualizer = FeatureVisualizer(model, device="cpu", normalize=False, quiet=True)
+    direction = torch.nn.functional.one_hot(torch.tensor(2), 5).float()
+    targets = {
+        "layer": FeatureTarget(layer="conv", reduction="norm"),
+        "channel": FeatureTarget(layer="conv", channel=1),
+        "neuron": FeatureTarget(layer="conv", neuron=2),
+        "class": FeatureTarget(layer="fc", neuron=3),
+        "direction": FeatureTarget(layer="fc", direction=direction),
+    }
+    config = MacoConfig(
+        width=16,
+        height=16,
+        input_shape=(3, 16, 16),
+        steps=1,
+        crops=1,
+        noise_intensity=0.01,
+    )
+
+    result = visualizer.visualize(
+        targets[target_kind],
+        method="maco",
+        config=config,
+        maco_dataset=[torch.rand(2, 3, 16, 16)],
+    )
+
+    assert result.as_chw().shape == (3, 16, 16)
+    assert result.transparency_chw().shape == (3, 16, 16)
+    assert torch.isfinite(result.as_chw()).all()
+    assert torch.isfinite(result.transparency_chw()).all()
+    assert result.metadata["method"] == "maco"
+
+    if target_kind == "class":
+        image_path = tmp_path / "maco.png"
+        importance_path = tmp_path / "maco_importance.png"
+        result.save(image_path)
+        result.save_transparency(importance_path)
+        assert image_path.is_file()
+        assert importance_path.is_file()
 
 
 def test_feature_visualizer_reference_maximize_api():
@@ -466,7 +597,8 @@ def test_feature_visualizer_caricature_api():
     visualizer = FeatureVisualizer(model, device="cpu", normalize=True, quiet=True)
     input_tensor = torch.rand(1, 3, 16, 16)
 
-    result = visualizer.caricature(
+    result = visualizer.visualize(
+        method="caricature",
         image=input_tensor,
         layers=["conv"],
         power=1.1,

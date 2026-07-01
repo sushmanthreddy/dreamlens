@@ -1,0 +1,199 @@
+{
+  "native_dreamlens_only": true,
+  "purpose": "Notebook result set using different images and ResNet18 layers.",
+  "model": "torchvision.models.resnet18",
+  "weights": "ResNet18_Weights.DEFAULT",
+  "device": "cpu",
+  "seed": 123,
+  "size": 160,
+  "steps": 42,
+  "caricature_size": 160,
+  "caricature_steps": 45,
+  "inputs": {
+    "dog": "inputs/dog_160.png",
+    "street": "inputs/street_160.png"
+  },
+  "workflows": [
+    {
+      "name": "resnet18_layer2_channels",
+      "type": "batched_channel_render",
+      "layer": "layer2.1.conv2",
+      "channels": [
+        3,
+        17,
+        41,
+        64,
+        89,
+        121
+      ],
+      "output": "images/resnet18_layer2_channels.png",
+      "shape": [
+        556,
+        624,
+        3
+      ],
+      "items": [
+        {
+          "channel": 3,
+          "output": "images/resnet18_layer2_channels_channel_3.png",
+          "shape": [
+            160,
+            160,
+            3
+          ]
+        },
+        {
+          "channel": 17,
+          "output": "images/resnet18_layer2_channels_channel_17.png",
+          "shape": [
+            160,
+            160,
+            3
+          ]
+        },
+        {
+          "channel": 41,
+          "output": "images/resnet18_layer2_channels_channel_41.png",
+          "shape": [
+            160,
+            160,
+            3
+          ]
+        },
+        {
+          "channel": 64,
+          "output": "images/resnet18_layer2_channels_channel_64.png",
+          "shape": [
+            160,
+            160,
+            3
+          ]
+        },
+        {
+          "channel": 89,
+          "output": "images/resnet18_layer2_channels_channel_89.png",
+          "shape": [
+            160,
+            160,
+            3
+          ]
+        },
+        {
+          "channel": 121,
+          "output": "images/resnet18_layer2_channels_channel_121.png",
+          "shape": [
+            160,
+            160,
+            3
+          ]
+        }
+      ]
+    },
+    {
+      "name": "resnet18_layer4_channels",
+      "type": "batched_channel_render",
+      "layer": "layer4.1.conv2",
+      "channels": [
+        7,
+        53,
+        119,
+        211,
+        337,
+        451
+      ],
+      "output": "images/resnet18_layer4_channels.png",
+      "shape": [
+        556,
+        624,
+        3
+      ],
+      "items": [
+        {
+          "channel": 7,
+          "output": "images/resnet18_layer4_channels_channel_7.png",
+          "shape": [
+            160,
+            160,
+            3
+          ]
+        },
+        {
+          "channel": 53,
+          "output": "images/resnet18_layer4_channels_channel_53.png",
+          "shape": [
+            160,
+            160,
+            3
+          ]
+        },
+        {
+          "channel": 119,
+          "output": "images/resnet18_layer4_channels_channel_119.png",
+          "shape": [
+            160,
+            160,
+            3
+          ]
+        },
+        {
+          "channel": 211,
+          "output": "images/resnet18_layer4_channels_channel_211.png",
+          "shape": [
+            160,
+            160,
+            3
+          ]
+        },
+        {
+          "channel": 337,
+          "output": "images/resnet18_layer4_channels_channel_337.png",
+          "shape": [
+            160,
+            160,
+            3
+          ]
+        },
+        {
+          "channel": 451,
+          "output": "images/resnet18_layer4_channels_channel_451.png",
+          "shape": [
+            160,
+            160,
+            3
+          ]
+        }
+      ]
+    },
+    {
+      "name": "dog_layer3_caricature",
+      "type": "caricature",
+      "input": "inputs/dog_160.png",
+      "layer": "layer3.1.conv2",
+      "power": 1.15,
+      "steps": 45,
+      "output": "images/dog_layer3_caricature.png",
+      "caricature": "images/dog_layer3_caricature_output.png",
+      "shape": [
+        272,
+        392,
+        3
+      ]
+    },
+    {
+      "name": "street_layer4_caricature",
+      "type": "caricature",
+      "input": "inputs/street_160.png",
+      "layer": "layer4.1.conv2",
+      "power": 1.1,
+      "steps": 45,
+      "output": "images/street_layer4_caricature.png",
+      "caricature": "images/street_layer4_caricature_output.png",
+      "shape": [
+        272,
+        392,
+        3
+      ]
+    }
+  ],
+  "contact_sheet": "native_notebook_contact_sheet.png"
+}

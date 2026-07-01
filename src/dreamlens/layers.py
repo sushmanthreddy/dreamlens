@@ -1,7 +1,16 @@
 from dataclasses import dataclass
+from collections.abc import Iterable
 from typing import Optional, Tuple
 
 import torch
+
+
+def as_list(value):
+    """Normalize one object or a non-string iterable to a list."""
+
+    if isinstance(value, (str, torch.nn.Module)) or not isinstance(value, Iterable):
+        return [value]
+    return list(value)
 
 
 @dataclass(frozen=True)
@@ -47,6 +56,56 @@ def resolve_module(model, layer):
         return modules[layer]
     except KeyError as exc:
         raise KeyError("Could not find layer {!r} in model.".format(layer)) from exc
+
+
+def first_tensor_output(output):
+    """Return the first tensor from a tensor or nested tuple/list output."""
+
+    if isinstance(output, torch.Tensor):
+        return output
+    if isinstance(output, (tuple, list)) and output:
+        return first_tensor_output(output[0])
+    raise TypeError("layer output must be a tensor or non-empty tensor sequence")
+
+
+class LayerCapture:
+    """Reusable forward-hook capture for every DreamLens subsystem."""
+
+    def __init__(self, module, clone=False):
+        if not isinstance(module, torch.nn.Module):
+            raise TypeError("module must be a torch.nn.Module")
+        self.module = module
+        self.clone = bool(clone)
+        self.output = None
+        self._handle = None
+
+    def open(self):
+        if self._handle is None:
+            self._handle = self.module.register_forward_hook(self._hook)
+        return self
+
+    def close(self):
+        if self._handle is not None:
+            self._handle.remove()
+            self._handle = None
+
+    def clear(self):
+        self.output = None
+
+    def tensor_output(self):
+        if self.output is None:
+            raise RuntimeError("The requested layer was not called by the model.")
+        return self.output
+
+    def _hook(self, module, inputs, output):
+        output = first_tensor_output(output)
+        self.output = output.clone() if self.clone else output
+
+    def __enter__(self):
+        return self.open()
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
 
 
 def list_layers(
