@@ -1,4 +1,3 @@
-from collections.abc import Iterable
 from copy import deepcopy
 
 import torch
@@ -10,9 +9,11 @@ from .image_parameters import (
     ReferenceMaskedCanvas,
     PixelCanvas,
     MaskedCanvas,
+    call_image_parameter,
 )
-from .layers import model_device, resolve_module
+from .layers import LayerCapture, as_list, model_device, resolve_module
 from .objectives import (
+    Objective,
     FeatureTarget,
     FeatureAmplificationObjective,
     PerSampleObjective,
@@ -23,9 +24,21 @@ from .objectives import (
     mean_activation_objective,
     first_tensor,
 )
-from .optimization import AmplifyConfig, OptimizationResult, RenderConfig
+from .optimization import (
+    AmplifyConfig,
+    MacoConfig,
+    OptimizationResult,
+    RenderConfig,
+    maco as run_maco,
+)
 from .preprocessing import identity_preprocess, image_to_tensor, imagenet_normalize
-from .render import compose, crop_or_pad_to, random_rotate, random_scale
+from .render import (
+    compose,
+    crop_or_pad_to,
+    normalize_positions,
+    random_rotate,
+    random_scale_from_choices,
+)
 from .transforms import (
     paired_default_transforms,
     random_translate,
@@ -66,7 +79,9 @@ class FeatureVisualizer:
     ):
         transforms = []
         if scale_min != 1.0 or scale_max != 1.0:
-            transforms.append(random_scale(_linspace(scale_min, scale_max, steps=32)))
+            transforms.append(
+                random_scale_from_choices(_linspace(scale_min, scale_max, steps=32))
+            )
         if rotate:
             rotate = int(rotate)
             transforms.append(random_rotate(range(-rotate, rotate + 1)))
@@ -141,13 +156,16 @@ class FeatureVisualizer:
         )
         preprocess_f = self.preprocess if preprocess is None else preprocess
         objective_f = self.default_func if custom_func is None else custom_func
-        hooks = [LayerHook(resolve_module(self.model, layer)) for layer in _as_list(layers)]
+        hooks = [
+            LayerCapture(resolve_module(self.model, layer)).open()
+            for layer in as_list(layers)
+        ]
         losses = []
 
         try:
             for step in range(iters):
                 _zero_grad(optimizer)
-                image = _call_image_parameter(image_parameter, self.device)
+                image = call_image_parameter(image_parameter, self.device)
                 if isinstance(image_parameter, ReferenceMaskedCanvas):
                     model_image = reference_masked_transform(
                         image,
@@ -199,7 +217,7 @@ class FeatureVisualizer:
         if config.parameterization not in {"lucid", "reference"}:
             raise ValueError("config.parameterization must be 'lucid' or 'reference'")
 
-        targets = [coerce_target(item) for item in _target_list(target)]
+        targets = [coerce_target(item) for item in as_list(target)]
         layers = [item.layer for item in targets]
         objective_f = TargetObjective(targets) if objective is None else objective
 
@@ -260,6 +278,209 @@ class FeatureVisualizer:
             attempt_index=best_index,
         )
 
+    def visualize(
+        self,
+        target=None,
+        method="maximize",
+        config=None,
+        image_parameter=None,
+        objective=None,
+        maco_dataset=None,
+        image=None,
+        layers=None,
+        power=1.2,
+    ):
+        """Unified feature-visualization entry point.
+
+        ``method='maximize'`` uses DreamLens's classical FFT/pixel engine.
+        ``method='maco'`` keeps Fourier magnitude fixed and optimizes phase.
+        ``method='caricature'`` amplifies features captured from ``image`` at
+        ``layers``. Algorithm-specific settings live in ``RenderConfig``,
+        ``MacoConfig``, and ``AmplifyConfig`` respectively.
+        """
+
+        method = str(method).lower()
+        if method in {"maximize", "fft", "lucid"}:
+            if target is None:
+                raise ValueError("target is required for classical maximize")
+            if image is not None or layers is not None:
+                raise ValueError("image and layers are only used by caricature")
+            return self.maximize(
+                target=target,
+                config=config,
+                image_parameter=image_parameter,
+                objective=objective,
+            )
+        if method == "maco":
+            if target is None:
+                raise ValueError("target is required for MaCo")
+            if image is not None or layers is not None:
+                raise ValueError("image and layers are only used by caricature")
+            if image_parameter is not None:
+                raise ValueError("MaCo does not accept an image_parameter")
+            if objective is not None:
+                raise ValueError("Pass a FeatureTarget to MaCo, not a custom objective")
+            return self.maco(
+                target=target,
+                config=config,
+                maco_dataset=maco_dataset,
+            )
+        if method in {"caricature", "amplify"}:
+            if target is not None:
+                raise ValueError("caricature uses image and layers, not target")
+            if image is None or layers is None:
+                raise ValueError("image and layers are required for caricature")
+            if objective is not None or maco_dataset is not None:
+                raise ValueError("objective and maco_dataset are not used by caricature")
+            return self.caricature(
+                image=image,
+                layers=layers,
+                power=power,
+                config=config,
+                image_parameter=image_parameter,
+            )
+        raise ValueError("method must be 'maximize', 'maco', or 'caricature'")
+
+    def maximize_layer(self, layer, config=None, reduction="norm", weight=1.0):
+        """Maximize a complete layer with the root DreamLens engine."""
+
+        return self.maximize(
+            FeatureTarget.for_layer(layer, reduction=reduction, weight=weight),
+            config=config,
+        )
+
+    def maximize_channel(
+        self,
+        layer,
+        channel,
+        config=None,
+        position=None,
+        reduction="mean",
+        weight=1.0,
+    ):
+        """Maximize one channel, optionally at one spatial/token position."""
+
+        return self.maximize(
+            FeatureTarget.for_channel(
+                layer,
+                channel,
+                position=position,
+                reduction=reduction,
+                weight=weight,
+            ),
+            config=config,
+        )
+
+    def maximize_neuron(
+        self,
+        layer,
+        neuron,
+        config=None,
+        reduction="mean",
+        weight=1.0,
+    ):
+        """Maximize one flattened neuron in any batched layer output."""
+
+        return self.maximize(
+            FeatureTarget.for_neuron(
+                layer,
+                neuron,
+                reduction=reduction,
+                weight=weight,
+            ),
+            config=config,
+        )
+
+    def maximize_class(
+        self,
+        class_id,
+        layer=-1,
+        config=None,
+        weight=1.0,
+    ):
+        """Maximize one classifier logit; the final leaf layer is the default."""
+
+        return self.maximize_neuron(
+            layer=layer,
+            neuron=int(class_id),
+            config=config,
+            weight=weight,
+        )
+
+    def maximize_direction(
+        self,
+        layer,
+        direction,
+        config=None,
+        cossim_power=2.0,
+        weight=1.0,
+    ):
+        """Maximize a user-provided direction in a layer activation space."""
+
+        return self.maximize(
+            FeatureTarget.for_direction(
+                layer,
+                direction,
+                cossim_power=cossim_power,
+                weight=weight,
+            ),
+            config=config,
+        )
+
+    def maco(self, target, config=None, maco_dataset=None):
+        """Run MaCo through the root API and return image plus importance map."""
+
+        config = MacoConfig() if config is None else config
+        if not isinstance(config, MacoConfig):
+            raise TypeError("config must be a MacoConfig")
+        target = coerce_target(target)
+        objective = Objective.from_target(
+            self.model,
+            target,
+            input_shape=config.input_shape,
+        )
+        preprocess = self.preprocess if config.preprocess is None else config.preprocess
+
+        if config.optimizer_cls is None:
+            optimizer = lambda parameters: torch.optim.NAdam(  # noqa: E731
+                parameters,
+                lr=config.lr,
+                eps=1e-7,
+            )
+        else:
+            optimizer = lambda parameters: config.optimizer_cls(  # noqa: E731
+                parameters,
+                lr=config.lr,
+            )
+        image, transparency = run_maco(
+            objective,
+            optimizer=optimizer,
+            maco_dataset=maco_dataset,
+            nb_steps=config.steps,
+            noise_intensity=config.noise_intensity,
+            box_size=config.box_size,
+            nb_crops=config.crops,
+            values_range=config.values_range,
+            custom_shape=(config.height, config.width),
+            input_shape=config.input_shape,
+            device=self.device,
+            preprocess=preprocess,
+        )
+        return OptimizationResult(
+            image=image,
+            transparency=transparency,
+            losses=[],
+            objective_value=None,
+            attempt_index=0,
+            metadata={
+                "method": "maco",
+                "target": target,
+                "steps": config.steps,
+                "crops": config.crops,
+                "values_range": tuple(config.values_range),
+            },
+        )
+
     def synthesize_channel(self, layer, channel, position=None, **kwargs):
         """Convenience wrapper for rendering a single channel/unit."""
 
@@ -281,31 +502,110 @@ class FeatureVisualizer:
     ):
         """Optimize one image per channel/unit in a single batched render."""
 
-        config = RenderConfig() if config is None else config
         channels = [int(channel) for channel in channels]
-        if not channels:
-            raise ValueError("channels must contain at least one channel index")
-        if config.attempts != 1:
-            raise ValueError("batched channel rendering currently supports attempts=1")
-        if config.parameterization not in {"lucid", "reference"}:
-            raise ValueError("config.parameterization must be 'lucid' or 'reference'")
-
-        positions = _normalize_positions(positions, len(channels))
-        objectives = [
-            channel_objective(
-                channel=channel,
+        positions = normalize_positions(positions, len(channels))
+        targets = [
+            FeatureTarget.for_channel(
+                layer,
+                channel,
                 position=positions[index],
                 reduction=reduction,
             )
             for index, channel in enumerate(channels)
         ]
+        return self._maximize_target_batch(
+            layer=layer,
+            targets=targets,
+            config=config,
+            image_parameter=image_parameter,
+        )
+
+    def maximize_neurons(
+        self,
+        layer,
+        neurons,
+        config=None,
+        reduction="mean",
+        image_parameter=None,
+    ):
+        """Optimize one image per flattened neuron in a single batch."""
+
+        targets = [
+            FeatureTarget.for_neuron(layer, neuron, reduction=reduction)
+            for neuron in neurons
+        ]
+        return self._maximize_target_batch(
+            layer=layer,
+            targets=targets,
+            config=config,
+            image_parameter=image_parameter,
+        )
+
+    def maximize_classes(
+        self,
+        class_ids,
+        layer=-1,
+        config=None,
+        image_parameter=None,
+    ):
+        """Optimize one image per classifier logit in a single batch."""
+
+        return self.maximize_neurons(
+            layer=layer,
+            neurons=class_ids,
+            config=config,
+            image_parameter=image_parameter,
+        )
+
+    def maximize_directions(
+        self,
+        layer,
+        directions,
+        config=None,
+        cossim_power=2.0,
+        image_parameter=None,
+    ):
+        """Optimize one image per activation direction in a single batch."""
+
+        targets = [
+            FeatureTarget.for_direction(
+                layer,
+                direction,
+                cossim_power=cossim_power,
+            )
+            for direction in directions
+        ]
+        return self._maximize_target_batch(
+            layer=layer,
+            targets=targets,
+            config=config,
+            image_parameter=image_parameter,
+        )
+
+    def _maximize_target_batch(
+        self,
+        layer,
+        targets,
+        config=None,
+        image_parameter=None,
+    ):
+        config = RenderConfig() if config is None else config
+        targets = list(targets)
+        if not targets:
+            raise ValueError("targets must contain at least one item")
+        if config.attempts != 1:
+            raise ValueError("batched rendering currently supports attempts=1")
+        if config.parameterization not in {"lucid", "reference"}:
+            raise ValueError("config.parameterization must be 'lucid' or 'reference'")
+
+        objectives = [TargetObjective([target]) for target in targets]
 
         transforms = config.transform.transforms
         preprocess = config.preprocess
         if config.parameterization == "reference":
             if image_parameter is None:
                 image_parameter = ReferenceCanvasBatch(
-                    batch_size=len(channels),
+                    batch_size=len(targets),
                     height=config.height,
                     width=config.width,
                     device=self.device,
@@ -324,7 +624,7 @@ class FeatureVisualizer:
                 width=config.width,
                 device=self.device,
                 standard_deviation=config.noise_std,
-                batch_size=len(channels),
+                batch_size=len(targets),
                 fft=config.fft,
                 decorrelate=config.decorrelate,
             )
@@ -387,7 +687,10 @@ class FeatureVisualizer:
 
     def capture_layers(self, layers, input_tensor, preprocess=None, first_batch=True):
         preprocess_f = self.preprocess if preprocess is None else preprocess
-        hooks = [LayerHook(resolve_module(self.model, layer)) for layer in _as_list(layers)]
+        hooks = [
+            LayerCapture(resolve_module(self.model, layer)).open()
+            for layer in as_list(layers)
+        ]
         try:
             with torch.no_grad():
                 tensor = image_to_tensor(input_tensor, device=self.device)
@@ -475,7 +778,10 @@ class FeatureVisualizer:
             optimizer_cls=optimizer_cls,
         )
         preprocess_f = self.preprocess if preprocess is None else preprocess
-        hooks = [LayerHook(resolve_module(self.model, layer)) for layer in _as_list(layers)]
+        hooks = [
+            LayerCapture(resolve_module(self.model, layer)).open()
+            for layer in as_list(layers)
+        ]
         losses = []
 
         if static:
@@ -489,7 +795,7 @@ class FeatureVisualizer:
         try:
             for step in range(iters):
                 _zero_grad(optimizer)
-                image = _call_image_parameter(image_parameter, self.device)
+                image = call_image_parameter(image_parameter, self.device)
 
                 if static:
                     moving = single_default_transform(
@@ -655,7 +961,10 @@ class FeatureVisualizer:
             weight_decay=config.weight_decay,
             optimizer_cls=config.optimizer_cls,
         )
-        hooks = [LayerHook(resolve_module(self.model, layer)) for layer in _as_list(layers)]
+        hooks = [
+            LayerCapture(resolve_module(self.model, layer)).open()
+            for layer in as_list(layers)
+        ]
         losses = []
 
         if config.target_mode == "static":
@@ -669,7 +978,7 @@ class FeatureVisualizer:
         try:
             for step in range(config.steps):
                 _zero_grad(optimizer)
-                image_normalized = _call_image_parameter(image_parameter, self.device)
+                image_normalized = call_image_parameter(image_parameter, self.device)
 
                 if config.target_mode == "static":
                     moving = reference_single_transform(
@@ -797,55 +1106,6 @@ class FeatureVisualizer:
 
 
 
-class LayerHook:
-    def __init__(self, module):
-        self.output = None
-        self.handle = module.register_forward_hook(self._hook)
-
-    def _hook(self, module, inputs, output):
-        self.output = output
-
-    def clear(self):
-        self.output = None
-
-    def tensor_output(self):
-        if self.output is None:
-            raise RuntimeError("The requested layer was not called by the model.")
-        return first_tensor(self.output)
-
-    def close(self):
-        self.handle.remove()
-
-
-def _as_list(value):
-    if isinstance(value, (str, torch.nn.Module)):
-        return [value]
-    if isinstance(value, Iterable):
-        return list(value)
-    raise TypeError("layers must be a layer, a layer name, or an iterable of them")
-
-
-def _target_list(value):
-    if isinstance(value, (str, torch.nn.Module, FeatureTarget)):
-        return [value]
-    if isinstance(value, Iterable):
-        return list(value)
-    return [value]
-
-
-def _normalize_positions(positions, count):
-    if positions is None:
-        return [None] * count
-    if isinstance(positions, tuple) and len(positions) == 2:
-        return [positions] * count
-    if isinstance(positions, int):
-        return [positions] * count
-    positions = list(positions)
-    if len(positions) != count:
-        raise ValueError("positions must be None, a single position, or match channels")
-    return positions
-
-
 def _coerce_transforms(transforms):
     if transforms is None:
         return identity_preprocess
@@ -868,13 +1128,6 @@ def _reference_transform_callable(transform_config):
         )
 
     return transform
-
-
-def _call_image_parameter(image_parameter, device):
-    try:
-        return image_parameter.forward(device=device)
-    except TypeError:
-        return image_parameter()
 
 
 def _zero_grad(optimizer):

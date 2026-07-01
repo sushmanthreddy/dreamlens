@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .layers import model_device, resolve_module
+from .layers import LayerCapture, model_device, resolve_module
 
 
 COLOR_CORRELATION_SVD_SQRT = np.asarray(
@@ -13,6 +13,18 @@ COLOR_CORRELATION_SVD_SQRT = np.asarray(
     dtype="float32",
 )
 MAX_NORM_SVD_SQRT = np.max(np.linalg.norm(COLOR_CORRELATION_SVD_SQRT, axis=0))
+
+
+def fft_2d_freq(height, width):
+    """Return Lucid-compatible real-FFT radial frequencies."""
+
+    height, width = int(height), int(width)
+    if height < 1 or width < 1:
+        raise ValueError("height and width must be positive")
+    freq_y = np.fft.fftfreq(height)[:, np.newaxis]
+    odd_extra = int(width % 2 == 1)
+    freq_x = np.fft.fftfreq(width)[: width // 2 + 1 + odd_extra]
+    return np.sqrt(freq_x**2 + freq_y**2)
 
 
 class ImageParameterization(torch.nn.Module):
@@ -72,12 +84,7 @@ class ImageParameterization(torch.nn.Module):
 
     @staticmethod
     def _rfft2d_freqs(h, w):
-        fy = np.fft.fftfreq(h)[:, None]
-        if w % 2 == 1:
-            fx = np.fft.fftfreq(w)[: w // 2 + 2]
-        else:
-            fx = np.fft.fftfreq(w)[: w // 2 + 1]
-        return np.sqrt(fx * fx + fy * fy)
+        return fft_2d_freq(h, w)
 
     def _raw_image(self):
         if not self.fft:
@@ -201,7 +208,7 @@ def render_icons(
     image_attempts = []
     score_attempts = []
 
-    with _LayerCapture(feature_module) as capture:
+    with LayerCapture(feature_module) as capture:
         for attempt in range(num_attempts):
             param = ImageParameterization(
                 size,
@@ -318,7 +325,7 @@ def render_neurons(
     neurons = [int(neuron) for neuron in neurons]
     if not neurons:
         raise ValueError("neurons must contain at least one index")
-    positions = _normalize_positions(positions, len(neurons))
+    positions = normalize_positions(positions, len(neurons))
 
     device = torch.device(device) if device is not None else model_device(model)
     model.to(device)
@@ -336,7 +343,7 @@ def render_neurons(
     image_attempts = []
     score_attempts = []
 
-    with _LayerCapture(feature_module) as capture:
+    with LayerCapture(feature_module) as capture:
         for attempt in range(num_attempts):
             param = ImageParameterization(
                 size,
@@ -420,13 +427,13 @@ def render_channels(*args, **kwargs):
 
 def standard_icon_transforms(size, alpha=False):
     transforms = [
-        pad(16, mode="constant", constant_value=0.5),
+        pad_image(16, mode="constant", constant_value=0.5),
         jitter(4),
         jitter(4),
         jitter(8),
         jitter(8),
         jitter(8),
-        random_scale(0.998**n for n in range(20, 40)),
+        random_scale_from_choices(0.998**n for n in range(20, 40)),
         random_rotate(chain(range(-20, 20), range(-10, 10), range(-5, 5), 5 * [0])),
         jitter(2),
         crop_or_pad_to(size, size),
@@ -457,7 +464,7 @@ def penalize_boundary_complexity(image, w=5, C=0.5):
     return -torch.sum(diffs * mask)
 
 
-def pad(width, mode="constant", constant_value=0.5):
+def pad_image(width, mode="constant", constant_value=0.5):
     def inner(image):
         if mode.lower() == "constant":
             return F.pad(image, (width, width, width, width), value=constant_value)
@@ -480,7 +487,7 @@ def jitter(amount):
     return inner
 
 
-def random_scale(scales):
+def random_scale_from_choices(scales):
     scales = list(scales)
 
     def inner(image):
@@ -692,17 +699,17 @@ def _select_neuron_activation(
     raise ValueError("activation_format must be 'NCHW' or 'NHWC'.")
 
 
-def _normalize_positions(positions, count):
+def normalize_positions(positions, count):
     if positions is None:
         return [None] * count
-    if isinstance(positions, tuple):
+    if isinstance(positions, tuple) and len(positions) == 2:
         return [positions] * count
     if isinstance(positions, int):
         return [positions] * count
 
     positions = list(positions)
     if len(positions) != count:
-        raise ValueError("positions must be a single position or one per neuron")
+        raise ValueError("positions must be None, a single position, or match targets")
     return positions
 
 
@@ -721,25 +728,3 @@ def _directions_to_tensor(directions, device):
 
 def _to_numpy_nhwc(image):
     return image.detach().clamp(0.0, 1.0).permute(0, 2, 3, 1).cpu().numpy()
-
-
-class _LayerCapture:
-    def __init__(self, module):
-        self.module = module
-        self.output = None
-        self._handle = None
-
-    def __enter__(self):
-        self._handle = self.module.register_forward_hook(self._hook)
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        self._handle.remove()
-
-    def clear(self):
-        self.output = None
-
-    def _hook(self, module, inputs, output):
-        if isinstance(output, (tuple, list)):
-            output = output[0]
-        self.output = output

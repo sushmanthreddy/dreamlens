@@ -1,13 +1,61 @@
-# Xplique Feature Visualizations in DreamLens
+# DreamLens Feature Visualization API
 
-DreamLens contains a native PyTorch implementation of the complete
-`xplique.features_visualizations` package. It does not import Xplique or any
-second machine-learning framework.
+DreamLens contains a native PyTorch implementation of the complete feature-
+visualization surface. It does not import Xplique or any second machine-
+learning framework, and it no longer maintains a parallel
+`dreamlens.features_visualizations` package.
 
-## Imports
+This functional surface is retained for Xplique migration and advanced
+composition. New DreamLens code should normally use the single root
+`FeatureVisualizer` API with `FeatureTarget`, `RenderConfig`, `MacoConfig`, and
+`AmplifyConfig`; it covers classical maximize, MaCo, and caricature without
+switching objective systems.
 
-Every public feature is available from both `dreamlens` and
-`dreamlens.features_visualizations`:
+## Class-first API
+
+```python
+from dreamlens import (
+    AmplifyConfig,
+    FeatureTarget,
+    FeatureVisualizer,
+    MacoConfig,
+    RenderConfig,
+)
+
+visualizer = FeatureVisualizer(model, preprocess=imagenet_preprocess)
+target = FeatureTarget.for_class(96, layer="fc")
+
+classic = visualizer.visualize(
+    target,
+    method="maximize",
+    config=RenderConfig(width=224, height=224, steps=160),
+)
+maco_result = visualizer.visualize(
+    target,
+    method="maco",
+    config=MacoConfig(
+        width=512,
+        height=512,
+        input_shape=(3, 224, 224),
+        steps=128,
+        crops=8,
+    ),
+)
+caricature = visualizer.visualize(
+    method="caricature",
+    image=input_image,
+    layers=["layer3.1.conv2"],
+    config=AmplifyConfig.reference(steps=200),
+)
+```
+
+Target factories are `for_layer`, `for_channel`, `for_neuron`, `for_class`,
+and `for_direction`. Every algorithm parameter remains explicit in its frozen
+config dataclass.
+
+## Root imports and advanced functions
+
+Every public feature is available directly from `dreamlens`:
 
 | Xplique area | DreamLens PyTorch API |
 | --- | --- |
@@ -99,11 +147,10 @@ the wrong input distribution and the resulting image can look clipped or
 blurred. The preprocessing runs after stochastic transforms and resize, just
 before model inference.
 
-The self-contained API notebook uses torchvision ResNet18 so every relevant
-cell focuses on the DreamLens public API: model preprocessing,
-`Objective.neuron`, `optimize`, checkpoints, output tensors, and additional
-objective types. It imports package APIs normally and does not invoke a helper
-or runner script.
+The self-contained API notebook uses torchvision ResNet18 and the class-first
+root API for preprocessing, explicit targets, classical maximize, MaCo,
+caricature, and output tensors. It imports package APIs normally and does not
+invoke a helper or runner script.
 
 The source Xplique notebook optimizes a 512×512 canvas but displays each image
 in a roughly 224–256 pixel subplot. At native 512-pixel zoom the Fourier canvas
@@ -142,12 +189,13 @@ image, transparency = maco(
 )
 ```
 
-With `maco_dataset=None`, DreamLens downloads Xplique's reference ImageNet
-magnitude spectrum to
+With `maco_dataset=None`, DreamLens loads or attempts to download Xplique's
+reference ImageNet magnitude spectrum to
 `$DREAMLENS_CACHE/spectrums/spectrum_decorrelated.npy` (default cache root:
 `~/.cache/dreamlens`). To avoid a download or use a different image domain,
-pass an iterable/DataLoader yielding NCHW batches. Grayscale MaCo always
-requires such a dataset.
+pass an iterable/DataLoader yielding NCHW batches. This is also the reliable
+offline path used by the executed notebooks. Grayscale MaCo always requires
+such a dataset.
 
 ## Validation
 
@@ -157,5 +205,5 @@ restoration, optimizer rebinding, explicit input metadata, and RGB/grayscale
 MaCo:
 
 ```bash
-PYTHONPATH=src pytest -q tests/test_features_visualizations.py
+PYTHONPATH=src pytest -q tests/test_feature_visualization.py
 ```

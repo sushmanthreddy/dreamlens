@@ -1,8 +1,14 @@
+from pathlib import Path
+
+import dreamlens
 import numpy as np
 import pytest
 import torch
 
 from dreamlens import (
+    FeatureTarget,
+    FeatureVisualizer,
+    MacoConfig,
     Objective,
     compose_transformations,
     cosine_similarity,
@@ -23,6 +29,56 @@ from dreamlens import (
     random_scale,
     total_variation_reg,
 )
+
+
+def test_feature_visualization_implementations_live_in_root_modules():
+    assert Objective.__module__ == "dreamlens.objectives"
+    assert optimize.__module__ == "dreamlens.optimization"
+    assert maco.__module__ == "dreamlens.optimization"
+    assert init_maco_buffer.__module__ == "dreamlens.image_parameters"
+    assert random_scale.__module__ == "dreamlens.transforms"
+    package_root = Path(dreamlens.__file__).resolve().parent
+    assert not (package_root / "features_visualizations").exists()
+
+
+def test_class_maco_is_exactly_the_root_maco_kernel():
+    model = FeatureVizModel()
+    target = FeatureTarget.for_class(1, layer="logits")
+    dataset = [torch.rand(2, 3, 16, 16)]
+    config = MacoConfig(
+        width=16,
+        height=16,
+        input_shape=(3, 16, 16),
+        steps=2,
+        lr=1.0,
+        crops=2,
+        noise_intensity=0.01,
+    )
+
+    torch.manual_seed(91)
+    expected_image, expected_importance = maco(
+        Objective.from_target(model, target, input_shape=config.input_shape),
+        maco_dataset=dataset,
+        nb_steps=config.steps,
+        nb_crops=config.crops,
+        noise_intensity=config.noise_intensity,
+        custom_shape=(config.height, config.width),
+        input_shape=config.input_shape,
+        values_range=config.values_range,
+        preprocess=lambda images: images,
+        device="cpu",
+    )
+
+    torch.manual_seed(91)
+    actual = FeatureVisualizer(
+        model,
+        device="cpu",
+        normalize=False,
+        quiet=True,
+    ).maco(target, config=config, maco_dataset=dataset)
+
+    assert torch.equal(actual.as_chw(), expected_image)
+    assert torch.equal(actual.transparency_chw(), expected_importance)
 
 
 class FeatureVizModel(torch.nn.Module):

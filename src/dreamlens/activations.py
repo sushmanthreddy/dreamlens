@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from .layers import model_device, resolve_module
+from .layers import LayerCapture, model_device, resolve_module
 
 
 def collect_activations(
@@ -44,7 +44,7 @@ def collect_activations(
     batches = _as_batches(inputs)
     collected = []
 
-    with _LayerCapture(feature_module) as capture:
+    with LayerCapture(feature_module) as capture:
         with torch.no_grad():
             for batch in batches:
                 batch = batch.to(device)
@@ -116,25 +116,3 @@ def _as_batches(inputs):
     if isinstance(inputs, torch.Tensor):
         return [inputs]
     return inputs
-
-
-class _LayerCapture:
-    def __init__(self, module):
-        self.module = module
-        self.output = None
-        self._handle = None
-
-    def __enter__(self):
-        self._handle = self.module.register_forward_hook(self._hook)
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        self._handle.remove()
-
-    def clear(self):
-        self.output = None
-
-    def _hook(self, module, inputs, output):
-        if isinstance(output, (tuple, list)):
-            output = output[0]
-        self.output = output
