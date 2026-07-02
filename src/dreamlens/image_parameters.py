@@ -19,6 +19,13 @@ _XPLIQUE_COLOR_CORRELATION = (
     (0.19482528, 0.00000000, -0.19482528),
     (0.04329450, -0.10823626, 0.06494176),
 )
+_XPLIQUE_COLOR_CORRELATION_TENSOR = torch.as_tensor(
+    _XPLIQUE_COLOR_CORRELATION,
+    dtype=torch.float32,
+)
+_XPLIQUE_COLOR_CORRELATION_INVERSE = torch.linalg.inv(
+    _XPLIQUE_COLOR_CORRELATION_TENSOR
+)
 
 
 def recorrelate_colors(images):
@@ -29,12 +36,46 @@ def recorrelate_colors(images):
     channel_dim = 0 if images.ndim == 3 else 1
     if images.shape[channel_dim] != 3:
         raise ValueError("color recorrelation requires exactly three channels")
-    matrix = images.new_tensor(_XPLIQUE_COLOR_CORRELATION)
+    matrix = _XPLIQUE_COLOR_CORRELATION_TENSOR.to(
+        device=images.device,
+        dtype=images.dtype,
+    )
     if images.ndim == 3:
-        flat = images.permute(1, 2, 0)
-        return torch.matmul(flat, matrix).permute(2, 0, 1)
-    flat = images.permute(0, 2, 3, 1)
-    return torch.matmul(flat, matrix).permute(0, 3, 1, 2)
+        channels, height, width = images.shape
+        flat = images.permute(1, 2, 0).reshape(height * width, channels)
+        return torch.matmul(flat, matrix).reshape(height, width, channels).permute(2, 0, 1)
+    batch, channels, height, width = images.shape
+    flat = images.permute(0, 2, 3, 1).reshape(batch, height * width, channels)
+    return (
+        torch.matmul(flat, matrix)
+        .reshape(batch, height, width, channels)
+        .permute(0, 3, 1, 2)
+    )
+
+
+def decorrelate_colors(images):
+    """Map RGB CHW/NCHW values into the decorrelated ImageNet color basis."""
+
+    if not isinstance(images, torch.Tensor) or images.ndim not in (3, 4):
+        raise ValueError("images must be a CHW or NCHW torch.Tensor")
+    channel_dim = 0 if images.ndim == 3 else 1
+    if images.shape[channel_dim] != 3:
+        raise ValueError("color decorrelation requires exactly three channels")
+    matrix = _XPLIQUE_COLOR_CORRELATION_INVERSE.to(
+        device=images.device,
+        dtype=images.dtype,
+    )
+    if images.ndim == 3:
+        channels, height, width = images.shape
+        flat = images.permute(1, 2, 0).reshape(height * width, channels)
+        return torch.matmul(flat, matrix).reshape(height, width, channels).permute(2, 0, 1)
+    batch, channels, height, width = images.shape
+    flat = images.permute(0, 2, 3, 1).reshape(batch, height * width, channels)
+    return (
+        torch.matmul(flat, matrix)
+        .reshape(batch, height, width, channels)
+        .permute(0, 3, 1, 2)
+    )
 
 
 def _normalize_to_range(images, values_range):
@@ -120,15 +161,8 @@ def init_maco_buffer(image_shape, dataset=None, std=1.0, device=None, data_forma
                 "The built-in MaCo spectrum is RGB; provide a dataset for grayscale images."
             )
         phase = np.random.normal(size=(3, *spectrum_shape), scale=std).astype(np.float32)
-        magnitude = np.load(_get_imagenet_spectrum_path())
-        magnitude = torch.as_tensor(magnitude, dtype=torch.float32).unsqueeze(0)
-        magnitude = F.interpolate(
-            magnitude,
-            size=spectrum_shape,
-            mode="bilinear",
-            align_corners=False,
-        )[0]
-        return magnitude.to(device=device), torch.as_tensor(phase, device=device)
+        magnitude = load_imagenet_spectrum(height, width, device=device)
+        return magnitude, torch.as_tensor(phase, device=device)
 
     magnitude_sum = None
     count = 0
@@ -183,6 +217,191 @@ def maco_image_parametrization(magnitude, phase, values_range):
     image = torch.sigmoid(image)
     low, high = min(values_range), max(values_range)
     return image * (high - low) + low
+
+
+class FeatureAccentuationCanvas(torch.nn.Module):
+    """Seeded Faccent Fourier parameterization.
+
+    ``parameterization='fourier'`` is Faccent's default: all preconditioned
+    complex coefficients are trainable. ``'fourier_phase'`` exposes the
+    optional magnitude-constrained variant, with seed phase, seed or ImageNet
+    magnitude, and Faccent's trainable sigmoid magnitude gate.
+    """
+
+    def __init__(
+        self,
+        image,
+        height=512,
+        width=None,
+        device=None,
+        parameterization="fourier",
+        magnitude_source="image",
+        use_magnitude_gate=True,
+        magnitude_gate_init=5.0,
+        desaturation=None,
+        frequency_decay=1.0,
+        color_decorrelate=True,
+        center_crop=True,
+        resize_mode="nearest",
+    ):
+        super().__init__()
+        self.height = int(height)
+        self.width = self.height if width is None else int(width)
+        if min(self.height, self.width) < 1:
+            raise ValueError("height and width must be positive")
+        if parameterization not in {"fourier", "fourier_phase"}:
+            raise ValueError("parameterization must be 'fourier' or 'fourier_phase'")
+        if desaturation is None:
+            desaturation = 5.0 if parameterization == "fourier" else 1.0
+        if desaturation <= 0:
+            raise ValueError("desaturation must be positive")
+        if frequency_decay <= 0:
+            raise ValueError("frequency_decay must be positive")
+        if magnitude_source not in {"image", "imagenet"}:
+            raise ValueError("magnitude_source must be 'image' or 'imagenet'")
+        if parameterization == "fourier" and magnitude_source != "image":
+            raise ValueError(
+                "magnitude_source is only configurable for 'fourier_phase'"
+            )
+        if resize_mode not in {"nearest", "bilinear", "bicubic"}:
+            raise ValueError("resize_mode must be 'nearest', 'bilinear', or 'bicubic'")
+
+        self.parameterization = parameterization
+        self.desaturation = float(desaturation)
+        self.frequency_decay = float(frequency_decay)
+        self.color_decorrelate = bool(color_decorrelate)
+        self.magnitude_source = magnitude_source
+        self.resize_mode = resize_mode
+        self.use_magnitude_gate = bool(use_magnitude_gate) and (
+            parameterization == "fourier_phase"
+        )
+
+        reference = _prepare_accentuation_reference(
+            image,
+            size=(self.height, self.width),
+            device=device,
+            center_crop=center_crop,
+            resize_mode=resize_mode,
+        )
+        if reference.shape[0] != 1:
+            raise ValueError("feature accentuation requires exactly one reference image")
+        self.register_buffer("reference_image", reference)
+
+        # Faccent uses ``torch.logit`` directly.  This is algebraically the
+        # same as ``log(x) - log1p(-x)``, but matching the primitive matters
+        # here because the initial preservation gradient is close to zero.
+        seed = torch.logit(reference.clamp(min=1e-6, max=1.0 - 1e-6))
+        if self.color_decorrelate:
+            seed = decorrelate_colors(seed)
+        seed = seed * self.desaturation
+        if parameterization == "fourier":
+            frequency_y = np.fft.fftfreq(self.height)[:, None]
+            frequency_x = np.fft.rfftfreq(self.width)[None, :]
+            frequencies = np.sqrt(frequency_x**2 + frequency_y**2)
+            scale = 1.0 / np.maximum(
+                frequencies,
+                1.0 / max(self.height, self.width),
+            ) ** self.frequency_decay
+            scale = reference.new_tensor(scale).view(
+                1,
+                1,
+                self.height,
+                self.width // 2 + 1,
+                1,
+            )
+            self.register_buffer("fourier_scale", scale)
+            spectrum = torch.fft.rfftn(
+                seed,
+                s=(self.height, self.width),
+                norm="ortho",
+            )
+            coefficients = torch.view_as_real(spectrum) / scale
+            self.fourier_coefficients = torch.nn.Parameter(coefficients.detach())
+            self.register_buffer("magnitude", None)
+            self.register_parameter("phase", None)
+            self.register_parameter("magnitude_gate", None)
+        else:
+            self.register_buffer("fourier_scale", None)
+            self.register_parameter("fourier_coefficients", None)
+            spectrum = torch.fft.rfft2(seed, dim=(-2, -1))
+            phase = torch.atan2(spectrum.imag, spectrum.real)
+            if magnitude_source == "image":
+                magnitude = torch.abs(spectrum)
+            else:
+                magnitude = load_imagenet_spectrum(
+                    self.height,
+                    self.width,
+                    device=reference.device,
+                    dtype=reference.dtype,
+                    faccent_scale=True,
+                ).unsqueeze(0)
+            self.register_buffer("magnitude", magnitude.detach())
+            self.phase = torch.nn.Parameter(phase.detach().clone())
+            if self.use_magnitude_gate:
+                self.magnitude_gate = torch.nn.Parameter(
+                    torch.full_like(magnitude, float(magnitude_gate_init))
+                )
+            else:
+                self.register_parameter("magnitude_gate", None)
+
+    def effective_magnitude(self):
+        if self.parameterization == "fourier":
+            spectrum = torch.view_as_complex(
+                (self.fourier_coefficients * self.fourier_scale).contiguous()
+            )
+            return torch.abs(spectrum)
+        if self.magnitude_gate is None:
+            return self.magnitude
+        return self.magnitude * torch.sigmoid(self.magnitude_gate)
+
+    def visible_image(self, device=None):
+        if device is not None:
+            self.to(device)
+        if self.parameterization == "fourier":
+            spectrum = torch.view_as_complex(
+                (self.fourier_coefficients * self.fourier_scale).contiguous()
+            )
+            image = torch.fft.irfftn(
+                spectrum,
+                s=(self.height, self.width),
+                norm="ortho",
+            )
+        else:
+            magnitude = self.effective_magnitude()
+            spectrum = torch.polar(magnitude, self.phase)
+            image = torch.fft.irfft2(
+                spectrum,
+                s=(self.height, self.width),
+                dim=(-2, -1),
+            )
+        image = image / self.desaturation
+        if self.color_decorrelate:
+            image = recorrelate_colors(image)
+        # The final color-basis permutation intentionally keeps Faccent's
+        # channels-last strides even though the logical shape is NCHW.
+        return torch.sigmoid(image)
+
+    def forward(self, device=None):
+        return self.visible_image(device=device)
+
+    def as_nchw(self, device=None):
+        return self.visible_image(device=device).detach().cpu()
+
+    def as_chw(self, device=None):
+        return self.as_nchw(device=device)[0]
+
+    def as_hwc(self, device=None):
+        return self.as_chw(device=device).permute(1, 2, 0)
+
+    def save(self, filename):
+        try:
+            from PIL import Image
+        except ImportError as exc:
+            raise ImportError("Saving images requires pillow to be installed.") from exc
+        array = (
+            self.as_hwc().clamp(0.0, 1.0).mul(255).round().byte().numpy()
+        )
+        Image.fromarray(array).save(filename)
 
 
 class FourierCanvas(ImageParameterization):
@@ -796,7 +1015,77 @@ def _extract_dataset_images(batch):
     return batch
 
 
+def load_imagenet_spectrum(
+    height,
+    width,
+    device=None,
+    dtype=torch.float32,
+    faccent_scale=False,
+):
+    """Load and resize the natural-image magnitude shared by MaCo and Faccent."""
+
+    height, width = int(height), int(width)
+    if min(height, width) < 1:
+        raise ValueError("height and width must be positive")
+    spectrum_width = width // 2 + 1
+    magnitude = torch.as_tensor(
+        np.load(_get_imagenet_spectrum_path()),
+        dtype=dtype,
+        device=device,
+    )
+    if magnitude.ndim != 3 or magnitude.shape[0] != 3:
+        raise ValueError("the packaged ImageNet spectrum must have shape (3, H, Wf)")
+    source_height, source_width = magnitude.shape[-2:]
+    interpolate_kwargs = {}
+    if faccent_scale:
+        interpolate_kwargs = {"align_corners": True, "antialias": True}
+    magnitude = F.interpolate(
+        magnitude.unsqueeze(0),
+        size=(height, spectrum_width),
+        mode="bilinear",
+        **interpolate_kwargs,
+    )[0]
+    if faccent_scale:
+        magnitude = magnitude * (
+            (source_height * source_width) / float(height * spectrum_width)
+        )
+    return magnitude
+
+
+def _prepare_accentuation_reference(
+    image,
+    size,
+    device=None,
+    center_crop=True,
+    resize_mode="nearest",
+):
+    reference = image_to_tensor(image, device=device)
+    target_height, target_width = (int(value) for value in size)
+    if center_crop:
+        height, width = reference.shape[-2:]
+        crop_size = min(height, width)
+        top = int(round((height - crop_size) / 2.0))
+        left = int(round((width - crop_size) / 2.0))
+        reference = reference[
+            ...,
+            top : top + crop_size,
+            left : left + crop_size,
+        ]
+    if reference.shape[-2:] != (target_height, target_width):
+        interpolation = {
+            "size": (target_height, target_width),
+            "mode": resize_mode,
+        }
+        if resize_mode in {"bilinear", "bicubic"}:
+            interpolation.update(align_corners=False, antialias=True)
+        reference = F.interpolate(reference, **interpolation)
+    return reference.clamp(0.0, 1.0).contiguous()
+
+
 def _get_imagenet_spectrum_path():
+    packaged = Path(__file__).resolve().parent / "data" / "clean_decorrelated.npy"
+    if packaged.exists():
+        return packaged
     cache_root = Path(
         os.environ.get("DREAMLENS_CACHE", Path.home() / ".cache" / "dreamlens")
     )

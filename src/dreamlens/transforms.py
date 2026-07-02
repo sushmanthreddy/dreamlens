@@ -73,6 +73,74 @@ def paired_default_transforms(
     )
 
 
+def feature_accentuation_transforms(
+    candidate,
+    reference,
+    output_size=(224, 224),
+    crops=16,
+    crop_min=0.05,
+    crop_max=0.99,
+    noise_std=0.02,
+):
+    """Create Faccent's transform-matched candidate/reference crop batch.
+
+    Each crop samples one square box and one Gaussian-plus-uniform noise field.
+    Both images receive exactly the same crop and noise before resizing. The
+    returned batch is ordered ``candidate, reference`` for every crop.
+    """
+
+    _validate_images(candidate)
+    _validate_images(reference)
+    if candidate.shape != reference.shape:
+        raise ValueError("candidate and reference must have the same NCHW shape")
+    if candidate.shape[0] != 1:
+        raise ValueError("feature accentuation expects one candidate/reference pair")
+    crops = int(crops)
+    if crops < 1:
+        raise ValueError("crops must be >= 1")
+    crop_min, crop_max = float(crop_min), float(crop_max)
+    if not 0 < crop_min <= crop_max <= 1:
+        raise ValueError("crop bounds must satisfy 0 < crop_min <= crop_max <= 1")
+    noise_std = float(noise_std)
+    if noise_std < 0:
+        raise ValueError("noise_std must be non-negative")
+    if not isinstance(output_size, (tuple, list)) or len(output_size) != 2:
+        raise ValueError("output_size must be (height, width)")
+    output_size = tuple(int(value) for value in output_size)
+    if min(output_size) < 1:
+        raise ValueError("output_size dimensions must be positive")
+
+    pair = torch.cat([candidate, reference], dim=0)
+    height, width = pair.shape[-2:]
+    transformed = []
+    for _ in range(crops):
+        # Faccent samples crop geometry with the CPU generator even when the
+        # image/model live on CUDA. Noise below is sampled on the image device.
+        fraction = torch.rand(1) * (crop_max - crop_min) + crop_min
+        top_fraction = torch.rand(1) * (1.0 - fraction)
+        left_fraction = torch.rand(1) * (1.0 - fraction)
+        top = int((top_fraction * height).item())
+        bottom = int(((top_fraction + fraction) * height).item())
+        left = int((left_fraction * width).item())
+        right = int(((left_fraction + fraction) * width).item())
+        bottom = max(top + 1, min(height, bottom))
+        right = max(left + 1, min(width, right))
+        view = pair[..., top:bottom, left:right]
+        if noise_std:
+            gaussian = torch.randn_like(view[0:1]) * noise_std
+            uniform = (torch.rand_like(view[0:1]) - 0.5) * noise_std
+            view = view + gaussian.expand_as(view) + uniform.expand_as(view)
+        view = F.interpolate(
+            view,
+            size=output_size,
+            mode="bilinear",
+            align_corners=True,
+            antialias=True,
+        )
+        transformed.append(view)
+    return torch.cat(transformed, dim=0)
+
+
 def reference_paired_transforms(
     image,
     reference,

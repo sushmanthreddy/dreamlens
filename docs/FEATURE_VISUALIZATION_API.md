@@ -8,7 +8,9 @@ learning framework, and it no longer maintains a parallel
 This functional surface is retained for Xplique migration and advanced
 composition. New DreamLens code should normally use the single root
 `FeatureVisualizer` API with `FeatureTarget`, `RenderConfig`, `MacoConfig`, and
-`AmplifyConfig`; it covers classical maximize, MaCo, and caricature without
+`AmplifyConfig`; `FeatureAccentuationConfig` adds Faccent without replacing
+the existing caricature path. Together they cover classical maximize, MaCo,
+feature accentuation, and caricature without
 switching objective systems.
 
 ## Class-first API
@@ -16,6 +18,7 @@ switching objective systems.
 ```python
 from dreamlens import (
     AmplifyConfig,
+    FeatureAccentuationConfig,
     FeatureTarget,
     FeatureVisualizer,
     MacoConfig,
@@ -41,6 +44,13 @@ maco_result = visualizer.visualize(
         crops=8,
     ),
 )
+accentuated = visualizer.visualize(
+    FeatureTarget.for_class(258, layer="fc"),
+    method="feature_accentuation",
+    image=input_image,
+    regularization_layer="layer2.1.conv2",
+    config=FeatureAccentuationConfig(steps=99, crops=16),
+)
 caricature = visualizer.visualize(
     method="caricature",
     image=input_image,
@@ -62,8 +72,9 @@ Every public feature is available directly from `dreamlens`:
 | Objectives | `Objective.layer`, `direction`, `channel`, `neuron`; arithmetic composition |
 | Optimization | `optimize` with FFT/pixel buffers, warmup, transforms, regularizers, checkpoints |
 | MaCo | `maco`, `maco_optimisation_step` |
+| Faccent feature accentuation | `feature_accentuation`, `FeatureAccentuationCanvas`, `feature_accentuation_transforms` |
 | Losses | `cosine_similarity`, `dot_cossim` |
-| Preconditioning | `fft_2d_freq`, `get_fft_scale`, `fft_image`, `fft_to_rgb`, `recorrelate_colors`, `to_valid_rgb`, `to_valid_grayscale`, `init_maco_buffer`, `maco_image_parametrization` |
+| Preconditioning | `fft_2d_freq`, `get_fft_scale`, `fft_image`, `fft_to_rgb`, `decorrelate_colors`, `recorrelate_colors`, `to_valid_rgb`, `to_valid_grayscale`, `init_maco_buffer`, `load_imagenet_spectrum`, `maco_image_parametrization` |
 | Regularizers | `l1_reg`, `l2_reg`, `l_inf_reg`, `total_variation_reg` |
 | Transformations | `random_blur`, `random_blur_grayscale`, `random_jitter`, `random_scale`, `random_flip`, `pad`, `compose_transformations`, `generate_standard_transformations` |
 
@@ -75,6 +86,7 @@ throughout:
 ```text
 model input and optimize checkpoints: [batch, channels, height, width]
 MaCo image and transparency:           [channels, height, width]
+Faccent image and transparency:        [channels, height, width]
 Objective input_shape:                 (channels, height, width)
 custom_shape:                          (height, width)
 ```
@@ -165,6 +177,90 @@ optimizer class/factory may be passed. DreamLens rebinds optimizer instances to
 the trainable image/phase parameter because PyTorch optimizers bind parameters
 at construction time, unlike Keras optimizers.
 
+## Feature accentuation (Faccent)
+
+DreamLens implements Hamblin et al., [“Feature Accentuation: Revealing 'What'
+Features Respond to in Natural Images”](https://arxiv.org/abs/2402.10039), in
+native PyTorch. It is image-seeded feature visualization, not an alias for
+DreamLens caricature or MaCo.
+
+```python
+from dreamlens import FeatureAccentuationConfig, FeatureTarget
+
+result = visualizer.accentuate(
+    target=FeatureTarget.for_class(258, layer="fc"),
+    image="dog.jpg",
+    regularization_layer="layer2.1.conv2",
+    config=FeatureAccentuationConfig(
+        width=512,
+        height=512,
+        input_shape=(3, 224, 224),
+        steps=100,
+        lr=0.05,
+        crops=16,
+        crop_min=0.05,
+        crop_max=0.99,
+        noise_std=0.02,
+        regularization_strength=1.0,
+        parameterization="fourier",
+        checkpoint_steps=(0, 20, 40, 60, 80, 98),
+    ),
+)
+```
+
+The implementation follows the reference computation:
+
+1. Center-crop/resize the seed and map RGB through safe logit plus ImageNet
+   color decorrelation.
+2. Initialize Faccent's frequency-preconditioned full complex Fourier buffer.
+3. At every step, concatenate candidate and fixed reference and apply the same
+   uniformly located crop and shared Gaussian-plus-uniform noise 16 times.
+4. Compute the negative target objective and the L2 distance between paired
+   features at `regularization_layer`.
+5. Once, measure summed absolute parameter gradients and set the balance to
+   `target_gradient / regularizer_gradient`.
+6. Minimize target loss plus `regularization_strength * balance * distance`.
+7. Accumulate absolute image gradients from the target objective alone as the
+   returned importance/transparency map.
+
+Two Faccent parameterizations are available:
+
+| `parameterization` | Trainable variables | Magnitude behavior |
+| --- | --- | --- |
+| `"fourier"` (default/reference) | all frequency-preconditioned real/imaginary coefficients | changes freely |
+| `"fourier_phase"` | phase plus optional sigmoid magnitude gate | seed magnitude or packaged ImageNet magnitude |
+
+For `fourier_phase`, use `magnitude_source="image"` for the seeded reference
+behavior or `"imagenet"` to reuse `dreamlens/data/clean_decorrelated.npy`.
+The bundled asset has shape `(3, 512, 257)`, dtype `float32`, and SHA-256
+`a4810ea049ef9a0fe4e3f26660188e53222281879b333e8fd61377f7491aafc8`.
+
+`regularization_layer` is deliberately explicit. DreamLens does not guess a
+layer whose feature geometry would materially change the result. Set
+`regularization_strength=0` only when an unregularized image-seeded run is
+intended.
+
+Faccent's displayed figure is not the raw Fourier canvas. It globally
+normalizes RGB contrast and uses the accumulated target-gradient magnitude as
+a percentile-clipped, Gaussian-blurred alpha mask. DreamLens exposes both:
+
+```python
+result.save("raw_canvas.png")
+result.save_accentuation("faccent_view.png", checkpoint=98)
+rgba = result.as_accentuation_rgba(checkpoint=98)
+```
+
+`checkpoint_steps` captures Faccent-style pre-update images and their
+accumulated transparency maps in `result.checkpoints` and
+`result.transparency_checkpoints`.
+
+The executed notebook is
+`examples/learn_dreamlens_feature_accentuation.ipynb`. It imports DreamLens and
+torchvision directly, uses torchvision ResNet18 with locally checked-in iguana
+and fox inputs, and has no Faccent-package or converted-model dependency. Its
+loggerhead and castle runs produce gradient balances of `9.7570873578` and
+`6.8875874332`, respectively.
+
 ## MaCo
 
 DreamLens implements MaCo from Fel et al., [“Unlocking Feature Visualization
@@ -189,21 +285,27 @@ image, transparency = maco(
 )
 ```
 
-With `maco_dataset=None`, DreamLens loads or attempts to download Xplique's
-reference ImageNet magnitude spectrum to
-`$DREAMLENS_CACHE/spectrums/spectrum_decorrelated.npy` (default cache root:
-`~/.cache/dreamlens`). To avoid a download or use a different image domain,
-pass an iterable/DataLoader yielding NCHW batches. This is also the reliable
-offline path used by the executed notebooks. Grayscale MaCo always requires
-such a dataset.
+With `maco_dataset=None`, DreamLens loads the packaged natural-image magnitude
+also used by Faccent's optional ImageNet phase mode. To use a different image
+domain, pass an iterable/DataLoader yielding NCHW batches. Grayscale MaCo
+always requires such a dataset.
 
 ## Validation
 
 The port's tests are derived from Xplique's feature-visualization tests and add
 PyTorch-specific checks for NCHW layouts, autograd preservation, model-state
-restoration, optimizer rebinding, explicit input metadata, and RGB/grayscale
-MaCo:
+restoration, optimizer rebinding, explicit input metadata, RGB/grayscale MaCo,
+Faccent Fourier parity, shared pair transforms, natural-spectrum integrity,
+and gradient-balanced feature accentuation:
 
 ```bash
 PYTHONPATH=src pytest -q tests/test_feature_visualization.py
 ```
+
+The implementation was also checked directly against the local Faccent
+reference on identical tensors and RNG seeds: packaged natural magnitude and
+one complete paired crop/noise/resize transform matched exactly; reconstructed
+full-Fourier and Fourier-phase images differed by at most `1.79e-7` in
+`float32`. These direct parity checks are development evidence; the committed
+tests independently cover the equations without making Faccent a runtime or
+test dependency.

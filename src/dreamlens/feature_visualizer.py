@@ -26,9 +26,11 @@ from .objectives import (
 )
 from .optimization import (
     AmplifyConfig,
+    FeatureAccentuationConfig,
     MacoConfig,
     OptimizationResult,
     RenderConfig,
+    feature_accentuation as run_feature_accentuation,
     maco as run_maco,
 )
 from .preprocessing import identity_preprocess, image_to_tensor, imagenet_normalize
@@ -289,14 +291,18 @@ class FeatureVisualizer:
         image=None,
         layers=None,
         power=1.2,
+        regularization_layer=None,
     ):
         """Unified feature-visualization entry point.
 
         ``method='maximize'`` uses DreamLens's classical FFT/pixel engine.
         ``method='maco'`` keeps Fourier magnitude fixed and optimizes phase.
+        ``method='feature_accentuation'`` accentuates ``target`` in ``image``
+        while preserving ``regularization_layer`` features.
         ``method='caricature'`` amplifies features captured from ``image`` at
         ``layers``. Algorithm-specific settings live in ``RenderConfig``,
-        ``MacoConfig``, and ``AmplifyConfig`` respectively.
+        ``MacoConfig``, ``FeatureAccentuationConfig``, and ``AmplifyConfig``
+        respectively.
         """
 
         method = str(method).lower()
@@ -305,6 +311,8 @@ class FeatureVisualizer:
                 raise ValueError("target is required for classical maximize")
             if image is not None or layers is not None:
                 raise ValueError("image and layers are only used by caricature")
+            if regularization_layer is not None:
+                raise ValueError("regularization_layer is only used by feature accentuation")
             return self.maximize(
                 target=target,
                 config=config,
@@ -316,6 +324,8 @@ class FeatureVisualizer:
                 raise ValueError("target is required for MaCo")
             if image is not None or layers is not None:
                 raise ValueError("image and layers are only used by caricature")
+            if regularization_layer is not None:
+                raise ValueError("regularization_layer is only used by feature accentuation")
             if image_parameter is not None:
                 raise ValueError("MaCo does not accept an image_parameter")
             if objective is not None:
@@ -325,6 +335,22 @@ class FeatureVisualizer:
                 config=config,
                 maco_dataset=maco_dataset,
             )
+        if method in {"feature_accentuation", "accentuation", "faccent"}:
+            if target is None or image is None:
+                raise ValueError("target and image are required for feature accentuation")
+            if layers is not None:
+                raise ValueError("layers is only used by caricature")
+            if objective is not None or maco_dataset is not None:
+                raise ValueError(
+                    "objective and maco_dataset are not used by feature accentuation"
+                )
+            return self.accentuate(
+                target=target,
+                image=image,
+                regularization_layer=regularization_layer,
+                config=config,
+                image_parameter=image_parameter,
+            )
         if method in {"caricature", "amplify"}:
             if target is not None:
                 raise ValueError("caricature uses image and layers, not target")
@@ -332,6 +358,8 @@ class FeatureVisualizer:
                 raise ValueError("image and layers are required for caricature")
             if objective is not None or maco_dataset is not None:
                 raise ValueError("objective and maco_dataset are not used by caricature")
+            if regularization_layer is not None:
+                raise ValueError("regularization_layer is only used by feature accentuation")
             return self.caricature(
                 image=image,
                 layers=layers,
@@ -339,7 +367,9 @@ class FeatureVisualizer:
                 config=config,
                 image_parameter=image_parameter,
             )
-        raise ValueError("method must be 'maximize', 'maco', or 'caricature'")
+        raise ValueError(
+            "method must be 'maximize', 'maco', 'feature_accentuation', or 'caricature'"
+        )
 
     def maximize_layer(self, layer, config=None, reduction="norm", weight=1.0):
         """Maximize a complete layer with the root DreamLens engine."""
@@ -480,6 +510,68 @@ class FeatureVisualizer:
                 "values_range": tuple(config.values_range),
             },
         )
+
+    def accentuate(
+        self,
+        target,
+        image,
+        regularization_layer=None,
+        config=None,
+        image_parameter=None,
+    ):
+        """Run Faccent-style feature accentuation on one natural image."""
+
+        config = FeatureAccentuationConfig() if config is None else config
+        if not isinstance(config, FeatureAccentuationConfig):
+            raise TypeError("config must be a FeatureAccentuationConfig")
+        target = coerce_target(target)
+        if config.regularization_strength and regularization_layer is None:
+            raise ValueError(
+                "regularization_layer is required when regularization_strength is non-zero"
+            )
+        objective = Objective.from_target(
+            self.model,
+            target,
+            input_shape=config.input_shape,
+        )
+        preprocess = self.preprocess if config.preprocess is None else config.preprocess
+        result = run_feature_accentuation(
+            objective=objective,
+            image=image,
+            regularization_layer=regularization_layer,
+            optimizer=config.optimizer_cls,
+            image_parameter=image_parameter,
+            nb_steps=config.steps,
+            nb_crops=config.crops,
+            crop_min=config.crop_min,
+            crop_max=config.crop_max,
+            noise_std=config.noise_std,
+            regularization_strength=config.regularization_strength,
+            custom_shape=(config.height, config.width),
+            input_shape=config.input_shape,
+            parameterization=config.parameterization,
+            magnitude_source=config.magnitude_source,
+            use_magnitude_gate=config.use_magnitude_gate,
+            magnitude_gate_init=config.magnitude_gate_init,
+            desaturation=config.desaturation,
+            frequency_decay=config.frequency_decay,
+            color_decorrelate=config.color_decorrelate,
+            center_crop=config.center_crop,
+            resize_mode=config.resize_mode,
+            grad_clip=config.grad_clip,
+            regularizer_in_transparency=config.regularizer_in_transparency,
+            checkpoint_steps=config.checkpoint_steps,
+            device=self.device,
+            preprocess=preprocess,
+            learning_rate=config.lr,
+        )
+        result.metadata.update(
+            {
+                "target": target,
+                "regularization_layer": regularization_layer,
+            }
+        )
+        return result
 
     def synthesize_channel(self, layer, channel, position=None, **kwargs):
         """Convenience wrapper for rendering a single channel/unit."""

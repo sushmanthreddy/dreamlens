@@ -1,4 +1,5 @@
 from pathlib import Path
+import hashlib
 
 import dreamlens
 import numpy as np
@@ -6,16 +7,22 @@ import pytest
 import torch
 
 from dreamlens import (
+    FeatureAccentuationCanvas,
+    FeatureAccentuationConfig,
     FeatureTarget,
     FeatureVisualizer,
     MacoConfig,
     Objective,
     compose_transformations,
     cosine_similarity,
+    decorrelate_colors,
+    feature_accentuation,
+    feature_accentuation_transforms,
     fft_image,
     fft_to_rgb,
     get_fft_scale,
     init_maco_buffer,
+    load_imagenet_spectrum,
     l1_reg,
     l2_reg,
     l_inf_reg,
@@ -35,10 +42,202 @@ def test_feature_visualization_implementations_live_in_root_modules():
     assert Objective.__module__ == "dreamlens.objectives"
     assert optimize.__module__ == "dreamlens.optimization"
     assert maco.__module__ == "dreamlens.optimization"
+    assert feature_accentuation.__module__ == "dreamlens.optimization"
     assert init_maco_buffer.__module__ == "dreamlens.image_parameters"
     assert random_scale.__module__ == "dreamlens.transforms"
     package_root = Path(dreamlens.__file__).resolve().parent
     assert not (package_root / "features_visualizations").exists()
+
+
+def test_feature_accentuation_fourier_seed_and_gate_match_reference_equations():
+    torch.manual_seed(13)
+    seed = torch.rand(1, 3, 17, 15).mul(0.8).add(0.1)
+    exact = FeatureAccentuationCanvas(
+        seed,
+        height=17,
+        width=15,
+        parameterization="fourier_phase",
+        use_magnitude_gate=False,
+        center_crop=False,
+    )
+    gated = FeatureAccentuationCanvas(
+        seed,
+        height=17,
+        width=15,
+        parameterization="fourier_phase",
+        use_magnitude_gate=True,
+        magnitude_gate_init=5.0,
+        center_crop=False,
+    )
+
+    assert torch.allclose(exact(), seed, atol=3e-6, rtol=1e-5)
+    assert torch.allclose(exact.phase, gated.phase)
+    assert torch.allclose(exact.magnitude, gated.magnitude)
+    assert torch.allclose(
+        gated.effective_magnitude(),
+        gated.magnitude * torch.sigmoid(torch.tensor(5.0)),
+    )
+    recovered = decorrelate_colors(dreamlens.recorrelate_colors(seed))
+    assert torch.allclose(recovered, seed, atol=2e-6, rtol=1e-5)
+
+
+def test_feature_accentuation_default_full_fourier_round_trips_seed():
+    torch.manual_seed(17)
+    seed = torch.rand(1, 3, 16, 18).mul(0.8).add(0.1)
+    canvas = FeatureAccentuationCanvas(
+        seed,
+        height=16,
+        width=18,
+        center_crop=False,
+    )
+
+    assert canvas.parameterization == "fourier"
+    assert canvas.fourier_coefficients.shape == (1, 3, 16, 10, 2)
+    assert torch.allclose(canvas(), seed, atol=3e-6, rtol=1e-5)
+
+
+def test_feature_accentuation_and_maco_share_packaged_natural_spectrum():
+    package_root = Path(dreamlens.__file__).resolve().parent
+    spectrum_path = package_root / "data" / "clean_decorrelated.npy"
+    digest = hashlib.sha256(spectrum_path.read_bytes()).hexdigest()
+    resized = load_imagenet_spectrum(32, 30, faccent_scale=True)
+    maco_magnitude, _ = init_maco_buffer((3, 32, 30))
+
+    assert digest == "a4810ea049ef9a0fe4e3f26660188e53222281879b333e8fd61377f7491aafc8"
+    assert resized.shape == maco_magnitude.shape == (3, 32, 16)
+    assert torch.isfinite(resized).all()
+    assert torch.isfinite(maco_magnitude).all()
+
+
+def test_feature_accentuation_transforms_share_crop_and_noise():
+    torch.manual_seed(19)
+    candidate = torch.rand(1, 3, 20, 18, requires_grad=True)
+    transformed = feature_accentuation_transforms(
+        candidate,
+        candidate.detach(),
+        output_size=(12, 10),
+        crops=4,
+        crop_min=0.3,
+        crop_max=0.8,
+        noise_std=0.03,
+    ).reshape(4, 2, 3, 12, 10)
+
+    assert torch.equal(transformed[:, 0], transformed[:, 1])
+    transformed[:, 0].sum().backward()
+    assert candidate.grad is not None
+    assert torch.isfinite(candidate.grad).all()
+
+
+def test_feature_accentuation_root_api_runs_balanced_paired_optimization(tmp_path):
+    torch.manual_seed(23)
+    model = FeatureVizModel()
+    model.train()
+    image = torch.rand(1, 3, 16, 16).mul(0.8).add(0.1)
+    target = FeatureTarget.for_class(2, layer="logits")
+    config = FeatureAccentuationConfig(
+        width=16,
+        height=16,
+        input_shape=(3, 16, 16),
+        steps=4,
+        lr=0.02,
+        crops=2,
+        crop_min=0.6,
+        crop_max=0.9,
+        noise_std=0.01,
+        checkpoint_steps=(0, 3),
+    )
+    visualizer = FeatureVisualizer(model, device="cpu", normalize=False, quiet=True)
+    original_training = model.training
+    original_requires_grad = [parameter.requires_grad for parameter in model.parameters()]
+
+    result = visualizer.visualize(
+        target,
+        method="feature_accentuation",
+        image=image,
+        regularization_layer="early",
+        config=config,
+    )
+
+    assert isinstance(result.image, FeatureAccentuationCanvas)
+    assert result.as_chw().shape == result.transparency_chw().shape == (3, 16, 16)
+    assert len(result.losses) == config.steps
+    assert len(result.metadata["target_losses"]) == config.steps
+    assert len(result.metadata["regularization_distances"]) == config.steps
+    assert result.metadata["method"] == "feature_accentuation"
+    assert result.metadata["parameterization"] == "fourier"
+    assert result.metadata["target"] == target
+    assert result.metadata["regularization_layer"] == "early"
+    assert np.isfinite(result.metadata["gradient_balance"])
+    assert result.metadata["gradient_balance"] > 0
+    assert torch.isfinite(result.as_chw()).all()
+    assert torch.isfinite(result.transparency_chw()).all()
+    assert float(result.transparency_chw().sum()) > 0
+    assert result.metadata["checkpoint_steps"] == [0, 3]
+    assert sorted(result.checkpoints) == sorted(result.transparency_checkpoints) == [0, 3]
+    rgba = result.as_accentuation_rgba(checkpoint=3)
+    assert rgba.shape == (4, 16, 16)
+    assert torch.isfinite(rgba).all()
+    assert float(rgba.min()) >= 0.0 and float(rgba.max()) <= 1.0
+    output_path = tmp_path / "accentuation.png"
+    result.save_accentuation(output_path, checkpoint=3)
+    assert output_path.exists()
+    assert model.training is original_training
+    assert [parameter.requires_grad for parameter in model.parameters()] == original_requires_grad
+
+
+def test_feature_accentuation_requires_explicit_regularization_layer():
+    visualizer = FeatureVisualizer(
+        FeatureVizModel(),
+        device="cpu",
+        normalize=False,
+        quiet=True,
+    )
+    config = FeatureAccentuationConfig(
+        width=16,
+        height=16,
+        input_shape=(3, 16, 16),
+        steps=1,
+        crops=1,
+    )
+    with pytest.raises(ValueError, match="regularization_layer"):
+        visualizer.accentuate(
+            FeatureTarget.for_class(0, layer="logits"),
+            torch.rand(1, 3, 16, 16),
+            config=config,
+        )
+
+
+def test_feature_accentuation_phase_mode_uses_packaged_magnitude_end_to_end():
+    torch.manual_seed(29)
+    visualizer = FeatureVisualizer(
+        FeatureVizModel(),
+        device="cpu",
+        normalize=False,
+        quiet=True,
+    )
+    result = visualizer.accentuate(
+        FeatureTarget.for_class(1, layer="logits"),
+        torch.rand(1, 3, 16, 16).mul(0.8).add(0.1),
+        config=FeatureAccentuationConfig(
+            width=16,
+            height=16,
+            input_shape=(3, 16, 16),
+            steps=1,
+            crops=1,
+            crop_min=1.0,
+            crop_max=1.0,
+            noise_std=0.0,
+            regularization_strength=0.0,
+            parameterization="fourier_phase",
+            magnitude_source="imagenet",
+        ),
+    )
+
+    assert result.image.phase is not None
+    assert result.image.magnitude_gate is not None
+    assert result.metadata["parameterization"] == "fourier_phase"
+    assert result.metadata["magnitude_source"] == "imagenet"
+    assert torch.isfinite(result.as_chw()).all()
 
 
 def test_class_maco_is_exactly_the_root_maco_kernel():
@@ -285,15 +484,7 @@ def test_init_maco_buffer_and_image_parameterization_rgb_and_grayscale():
     assert 0 <= float(gray.min()) <= float(gray.max()) <= 1
 
 
-def test_init_maco_buffer_uses_cached_reference_spectrum(tmp_path, monkeypatch):
-    spectrum_dir = tmp_path / "spectrums"
-    spectrum_dir.mkdir()
-    np.save(
-        spectrum_dir / "spectrum_decorrelated.npy",
-        np.abs(np.random.default_rng(0).normal(size=(3, 8, 5))).astype("float32"),
-    )
-    monkeypatch.setenv("DREAMLENS_CACHE", str(tmp_path))
-
+def test_init_maco_buffer_uses_packaged_reference_spectrum():
     magnitude, phase = init_maco_buffer((3, 12, 10))
 
     assert magnitude.shape == phase.shape == (3, 12, 6)

@@ -6,7 +6,7 @@ which files own each feature.
 
 DreamLens is a native PyTorch interpretability toolkit. It supports activation
 collection, activation atlas generation, feature visualization, channel/unit
-rendering, image amplification, caricature generation, masked optimization, and
+rendering, Faccent feature accentuation, image amplification, caricature generation, masked optimization, and
 multi-model objectives.
 
 ## One-Screen Context For LLMs
@@ -19,10 +19,10 @@ Package path: activation-atlas-pytorch/src/dreamlens
 Main public import: from dreamlens import ...
 Main class: FeatureVisualizer
 Main atlas APIs: collect_activations, activation_atlas, aligned_activation_atlas
-Main visualization API: visualize (maximize, maco, caricature methods)
-Convenience APIs: maximize, maco, caricature, amplify, batched maximize_* methods
+Main visualization API: visualize (maximize, maco, feature_accentuation, caricature methods)
+Convenience APIs: maximize, maco, accentuate, caricature, amplify, batched maximize_* methods
 Main target: FeatureTarget (layer, channel, flattened neuron/class, direction)
-Main configs: RenderConfig, TransformConfig, MacoConfig, AmplifyConfig
+Main configs: RenderConfig, TransformConfig, MacoConfig, FeatureAccentuationConfig, AmplifyConfig
 Main result object: OptimizationResult
 Model requirement: torch.nn.Module whose selected layer returns a tensor
 Supported layer output shapes: [N, C], [N, L, C], [N, C, H, W], [N, H, W, C]
@@ -30,9 +30,10 @@ Best model family: CNN image models with NCHW feature maps
 Native only: do not import external feature-visualization packages
 Feature visualization: one root FeatureVisualizer/FeatureTarget architecture
 MaCo: supported for RGB and dataset-backed grayscale models
+Faccent: full-complex Fourier default plus optional phase/magnitude-gate mode
 Smoke test: PYTHONPATH=src pytest -q tests/test_smoke.py
 Unified notebook: examples/Feature_Visualization_Getting_started_PyTorch.ipynb
-Notebook workflows: classical maximize, MaCo, reference caricature
+Notebook workflows: classical maximize, MaCo, Faccent feature accentuation, reference caricature
 Notebook outputs: results/feature_visualization_getting_started_pytorch
 ```
 
@@ -42,8 +43,8 @@ Notebook outputs: results/feature_visualization_getting_started_pytorch
 | --- | --- |
 | `src/dreamlens/feature_visualizer.py` | Root engine: classical maximization, MaCo entry point, channel/neuron/class/direction rendering, amplification, caricature, layer capture |
 | `src/dreamlens/objectives.py` | Canonical targets, composable compatibility objectives, direction losses, amplification objectives, and image regularizers |
-| `src/dreamlens/optimization.py` | Configs/results plus classical composable optimization and the exact MaCo kernel |
-| `src/dreamlens/image_parameters.py` | Root canvases plus shared Fourier/MaCo preconditioning |
+| `src/dreamlens/optimization.py` | Configs/results plus classical, MaCo, and gradient-balanced Faccent kernels |
+| `src/dreamlens/image_parameters.py` | Root canvases plus shared Fourier/MaCo/Faccent preconditioning and packaged magnitude loader |
 | `src/dreamlens/activations.py` | Activation collection from real inputs |
 | `src/dreamlens/atlas.py` | Activation atlas and aligned activation atlas pipelines |
 | `src/dreamlens/render.py` | Lower-level icon/channel/neuron rendering utilities |
@@ -304,6 +305,7 @@ DreamLens visualizes more than whole layers.
 | Multiple targets in one image | `visualizer.maximize([FeatureTarget(...), FeatureTarget(...)])` |
 | Suppressed/negative feature | `FeatureTarget(..., sign=-1.0)` |
 | Custom objective | `visualizer.synthesize(..., custom_func=...)` |
+| Image-seeded explicit target | `visualizer.accentuate(...)` |
 | Real image caricature | `visualizer.caricature(...)` |
 | Activation atlas cell directions | `activation_atlas(...)` / `render_icons(...)` |
 
@@ -313,8 +315,10 @@ Supported reductions for target values:
 mean, sum, max, norm
 ```
 
-`FeatureTarget` is the single target representation for both classical
-maximization and MaCo. Use the same object with either method:
+`FeatureTarget` is the single target representation for classical
+maximization, MaCo, and feature accentuation. Use the same object across them.
+Feature accentuation additionally requires a seed image and, when regularized,
+an explicit preservation layer.
 
 ```python
 from dreamlens import MacoConfig
@@ -343,7 +347,7 @@ maco.save_transparency("maco_importance.png")
 ```
 
 MaCo keeps its Fourier magnitude fixed and optimizes phase. With
-`maco_dataset=None`, it uses the cached/downloaded ImageNet magnitude. Passing
+`maco_dataset=None`, it uses the packaged natural-image magnitude. Passing
 an iterable of NCHW batches computes a fixed domain-specific magnitude instead.
 
 ## Batched Channel Rendering
@@ -396,6 +400,54 @@ param.save("custom_objective.png")
 
 Custom objectives receive a list of captured layer outputs. Return a scalar loss
 to minimize. To maximize something, return its negative.
+
+## Image-Seeded Feature Accentuation (Faccent)
+
+Feature accentuation implements Hamblin et al., [“Feature Accentuation:
+Revealing 'What' Features Respond to in Natural
+Images”](https://arxiv.org/abs/2402.10039). It begins at a natural image,
+maximizes an explicit `FeatureTarget`, and preserves an explicit earlier layer
+using a one-time target/regularizer gradient ratio.
+
+```python
+from dreamlens import FeatureAccentuationConfig, FeatureTarget
+
+result = visualizer.accentuate(
+    FeatureTarget.for_class(258, layer="fc"),
+    image="dog.jpg",
+    regularization_layer="layer2.1.conv2",
+    config=FeatureAccentuationConfig(
+        steps=99,
+        crops=16,
+        parameterization="fourier",
+        checkpoint_steps=(0, 20, 40, 60, 80, 98),
+    ),
+)
+result.save_accentuation("accentuated.png", checkpoint=98)
+result.save_transparency("importance.png")
+```
+
+The default `"fourier"` mode trains all seeded, frequency-preconditioned
+complex coefficients, matching the main Faccent algorithm. The optional
+`"fourier_phase"` mode trains phase and a sigmoid magnitude gate. Its magnitude
+can come from the input image or the packaged `clean_decorrelated.npy` shared
+with MaCo. The candidate/reference crop and noise are identical within each of
+the default 16 pairs.
+
+`result.save()` is the raw optimized canvas. Faccent's notebook instead
+normalizes its contrast and applies a clipped, blurred alpha mask derived from
+the accumulated absolute target gradient. Use `result.save_accentuation()` or
+`result.as_accentuation_rgba()` for that reference presentation. Requested
+optimization snapshots are available in `result.checkpoints` and
+`result.transparency_checkpoints`.
+
+This does not replace caricature. Caricature amplifies a feature direction
+captured from the source into a separately generated image; Faccent accentuates
+a chosen target within the source image and explicitly limits feature drift.
+
+Executed example:
+`examples/learn_dreamlens_feature_accentuation.ipynb`, with outputs under
+`results/dreamlens_feature_accentuation_notebook/`.
 
 ## Image Amplification And Caricature
 
@@ -670,8 +722,8 @@ depend on a separate runner.
 
 ## Known Limits
 
-- MaCo without a supplied dataset needs one initial download of the reference
-  ImageNet spectrum; grayscale MaCo always needs a representative dataset.
+- RGB MaCo works offline with the packaged natural-image spectrum; grayscale
+  MaCo always needs a representative dataset.
 - Pixel-identical reproduction of any external example image is not guaranteed.
 - Very deep/high-channel layers can need more steps and more compute.
 - CPU runs work but can be slow for large images, many channels, or high steps.

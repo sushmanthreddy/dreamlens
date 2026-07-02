@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 
 from .image_parameters import (
+    FeatureAccentuationCanvas,
     fft_image,
     fft_to_rgb,
     get_fft_scale,
@@ -16,9 +17,13 @@ from .image_parameters import (
     to_valid_grayscale,
     to_valid_rgb,
 )
-from .layers import model_device
+from .layers import LayerCapture, model_device, resolve_module
 from .objectives import Objective, _normalize_input_shape, infer_input_channels
-from .transforms import compose_transformations, generate_standard_transformations
+from .transforms import (
+    compose_transformations,
+    feature_accentuation_transforms,
+    generate_standard_transformations,
+)
 
 
 @dataclass(frozen=True)
@@ -194,6 +199,81 @@ class MacoConfig:
 
 
 @dataclass(frozen=True)
+class FeatureAccentuationConfig:
+    """Configuration for Faccent-style feature accentuation of a real image."""
+
+    width: int = 512
+    height: int = 512
+    input_shape: tuple[int, int, int] = (3, 224, 224)
+    steps: int = 99
+    lr: float = 5e-2
+    crops: int = 16
+    crop_min: float = 0.05
+    crop_max: float = 0.99
+    noise_std: float = 0.02
+    regularization_strength: float = 1.0
+    parameterization: str = "fourier"
+    magnitude_source: str = "image"
+    use_magnitude_gate: bool = True
+    magnitude_gate_init: float = 5.0
+    desaturation: Optional[float] = None
+    frequency_decay: float = 1.0
+    color_decorrelate: bool = True
+    center_crop: bool = True
+    resize_mode: str = "nearest"
+    preprocess: object = None
+    optimizer_cls: object = None
+    grad_clip: Optional[float] = None
+    regularizer_in_transparency: bool = False
+    checkpoint_steps: object = None
+
+    def __post_init__(self):
+        if not isinstance(self.width, int) or not isinstance(self.height, int):
+            raise TypeError("width and height must be integers")
+        if min(self.width, self.height) < 1:
+            raise ValueError("width and height must be positive")
+        if not isinstance(self.input_shape, (tuple, list)) or len(self.input_shape) != 3:
+            raise TypeError("input_shape must be (channels, height, width)")
+        if tuple(self.input_shape)[0] != 3 or min(self.input_shape) < 1:
+            raise ValueError("feature accentuation input_shape must be RGB (3, H, W)")
+        if self.steps < 1:
+            raise ValueError("steps must be >= 1")
+        if self.lr <= 0:
+            raise ValueError("lr must be positive")
+        if self.crops < 1:
+            raise ValueError("crops must be >= 1")
+        if not 0 < self.crop_min <= self.crop_max <= 1:
+            raise ValueError("crop bounds must satisfy 0 < crop_min <= crop_max <= 1")
+        if self.noise_std < 0:
+            raise ValueError("noise_std must be non-negative")
+        if self.regularization_strength < 0:
+            raise ValueError("regularization_strength must be non-negative")
+        if self.parameterization not in {"fourier", "fourier_phase"}:
+            raise ValueError("parameterization must be 'fourier' or 'fourier_phase'")
+        if self.magnitude_source not in {"image", "imagenet"}:
+            raise ValueError("magnitude_source must be 'image' or 'imagenet'")
+        if self.parameterization == "fourier" and self.magnitude_source != "image":
+            raise ValueError(
+                "magnitude_source is only configurable for 'fourier_phase'"
+            )
+        if self.desaturation is not None and self.desaturation <= 0:
+            raise ValueError("desaturation must be positive or None")
+        if self.frequency_decay <= 0:
+            raise ValueError("frequency_decay must be positive")
+        if self.resize_mode not in {"nearest", "bilinear", "bicubic"}:
+            raise ValueError("resize_mode must be 'nearest', 'bilinear', or 'bicubic'")
+        if self.grad_clip is not None and self.grad_clip <= 0:
+            raise ValueError("grad_clip must be positive or None")
+        if self.checkpoint_steps is not None:
+            steps = tuple(int(step) for step in self.checkpoint_steps)
+            if any(step < 0 or step >= self.steps for step in steps):
+                raise ValueError("checkpoint_steps must be between 0 and steps - 1")
+            if len(set(steps)) != len(steps):
+                raise ValueError("checkpoint_steps must not contain duplicates")
+            object.__setattr__(self, "checkpoint_steps", steps)
+
+
+@dataclass(frozen=True)
 class OptimizationResult:
     """Return object for the project-owned high-level API."""
 
@@ -203,6 +283,8 @@ class OptimizationResult:
     attempt_index: int = 0
     transparency: object = None
     metadata: object = None
+    checkpoints: object = None
+    transparency_checkpoints: object = None
 
     def save(self, filename):
         if hasattr(self.image, "save"):
@@ -254,6 +336,96 @@ class OptimizationResult:
         heatmap = heatmap / heatmap.amax().clamp_min(1e-12)
         return _save_chw_tensor(heatmap, filename)
 
+    def as_accentuation_rgba(
+        self,
+        percentile=20.0,
+        blur_sigma=2.0,
+        checkpoint=None,
+    ):
+        """Return Faccent's normalized RGB plus attribution-derived alpha.
+
+        Faccent notebook figures are not raw optimized images. They globally
+        normalize contrast and use the accumulated absolute image gradient as
+        a blurred opacity mask. ``checkpoint`` is an optimization step captured
+        through ``FeatureAccentuationConfig.checkpoint_steps``.
+        """
+
+        image, transparency = self._accentuation_tensors(checkpoint)
+        percentile = float(percentile)
+        blur_sigma = float(blur_sigma)
+        if not 0.0 <= percentile <= 100.0:
+            raise ValueError("percentile must be between 0 and 100")
+        if blur_sigma < 0:
+            raise ValueError("blur_sigma must be non-negative")
+
+        image = image.float()
+        image = image - image.mean()
+        image = image / image.std().clamp_min(1e-12)
+        image = image - image.amin()
+        image = image / image.amax().clamp_min(1e-12)
+
+        if percentile in (0.0, 100.0):
+            alpha = torch.ones_like(image[:1])
+        else:
+            alpha = transparency.float().mean(dim=0, keepdim=True)
+            threshold = torch.quantile(alpha.flatten(), 1.0 - percentile / 100.0)
+            alpha = alpha.clamp(max=threshold)
+            alpha = alpha / alpha.amax().clamp_min(1e-12)
+            alpha = _gaussian_blur_map(alpha, blur_sigma)
+        return torch.cat([image.clamp(0.0, 1.0), alpha.clamp(0.0, 1.0)], dim=0)
+
+    def save_accentuation(
+        self,
+        filename,
+        percentile=20.0,
+        blur_sigma=2.0,
+        checkpoint=None,
+        background="white",
+    ):
+        """Save the Faccent-style masked result, optionally composited."""
+
+        rgba = self.as_accentuation_rgba(
+            percentile=percentile,
+            blur_sigma=blur_sigma,
+            checkpoint=checkpoint,
+        )
+        if background is None:
+            return _save_chw_tensor(rgba, filename)
+        if background not in {"white", "black"}:
+            raise ValueError("background must be 'white', 'black', or None")
+        alpha = rgba[3:4]
+        fill = 1.0 if background == "white" else 0.0
+        composite = rgba[:3] * alpha + fill * (1.0 - alpha)
+        return _save_chw_tensor(composite, filename)
+
+    def _accentuation_tensors(self, checkpoint):
+        if checkpoint is None:
+            image = self.as_chw()
+            transparency = self.transparency_chw()
+        else:
+            checkpoint = int(checkpoint)
+            if not self.checkpoints or checkpoint not in self.checkpoints:
+                available = sorted(self.checkpoints or {})
+                raise KeyError(
+                    "checkpoint {} was not captured; available steps: {}".format(
+                        checkpoint,
+                        available,
+                    )
+                )
+            image = torch.as_tensor(self.checkpoints[checkpoint]).detach().cpu()
+            if image.dim() == 4:
+                image = image[0]
+            transparency = torch.as_tensor(
+                self.transparency_checkpoints[checkpoint]
+            ).detach().cpu()
+            if transparency.dim() == 4:
+                transparency = transparency[0]
+        if transparency is None:
+            raise ValueError("this result has no transparency map")
+        if image.shape != transparency.shape:
+            raise ValueError("image and transparency must have matching CHW shapes")
+        return image, transparency
+
     def __array__(self, dtype=None):
         array = self.as_hwc().numpy()
         if dtype is not None:
@@ -277,6 +449,26 @@ def _save_chw_tensor(tensor, filename):
     else:
         raise ValueError("image tensor must have 1, 3, or 4 channels")
     Image.fromarray(array).save(filename)
+
+
+def _gaussian_blur_map(image, sigma, truncate=4.0):
+    if sigma == 0:
+        return image
+    radius = int(float(truncate) * float(sigma) + 0.5)
+    if radius == 0:
+        return image
+    coordinates = torch.arange(
+        -radius,
+        radius + 1,
+        dtype=image.dtype,
+        device=image.device,
+    )
+    kernel = torch.exp(-0.5 * (coordinates / float(sigma)) ** 2)
+    kernel = kernel / kernel.sum()
+    padded = F.pad(image.unsqueeze(0), (radius, radius, 0, 0), mode="reflect")
+    blurred = F.conv2d(padded, kernel.view(1, 1, 1, -1))
+    padded = F.pad(blurred, (0, 0, radius, radius), mode="reflect")
+    return F.conv2d(padded, kernel.view(1, 1, -1, 1))[0]
 
 
 def optimize(
@@ -528,6 +720,351 @@ def _open_relu_gradients(model):
             handle.remove()
         for module, inplace in inplace_states:
             module.inplace = inplace
+
+
+def feature_accentuation(
+    objective,
+    image,
+    regularization_layer=None,
+    optimizer=None,
+    image_parameter=None,
+    nb_steps=99,
+    nb_crops=16,
+    crop_min=0.05,
+    crop_max=0.99,
+    noise_std=0.02,
+    regularization_strength=1.0,
+    custom_shape=(512, 512),
+    input_shape=(3, 224, 224),
+    parameterization="fourier",
+    magnitude_source="image",
+    use_magnitude_gate=True,
+    magnitude_gate_init=5.0,
+    desaturation=None,
+    frequency_decay=1.0,
+    color_decorrelate=True,
+    center_crop=True,
+    resize_mode="nearest",
+    grad_clip=None,
+    regularizer_in_transparency=False,
+    checkpoint_steps=None,
+    device=None,
+    preprocess=None,
+    learning_rate=5e-2,
+):
+    """Accentuate a target while preserving a reference feature representation.
+
+    This is a native PyTorch implementation of Faccent's core algorithm. The
+    default trains a seed-initialized, frequency-preconditioned complex Fourier
+    buffer; the optional phase mode constrains magnitude. Candidate and fixed
+    reference receive matched crops/noise. A one-time gradient ratio balances
+    target maximization against L2 feature preservation.
+    """
+
+    if not isinstance(objective, Objective):
+        raise TypeError("objective must be an Objective")
+    nb_steps, nb_crops = int(nb_steps), int(nb_crops)
+    if nb_steps < 1:
+        raise ValueError("nb_steps must be >= 1")
+    if nb_crops < 1:
+        raise ValueError("nb_crops must be >= 1")
+    if regularization_strength < 0:
+        raise ValueError("regularization_strength must be non-negative")
+    if regularization_strength and regularization_layer is None:
+        raise ValueError(
+            "regularization_layer is required when regularization_strength is non-zero"
+        )
+    checkpoint_steps = (
+        set() if checkpoint_steps is None else {int(step) for step in checkpoint_steps}
+    )
+    if any(step < 0 or step >= nb_steps for step in checkpoint_steps):
+        raise ValueError("checkpoint_steps must be between 0 and nb_steps - 1")
+    if custom_shape is None or len(custom_shape) != 2:
+        raise ValueError("custom_shape must be (height, width)")
+    canvas_height, canvas_width = (int(value) for value in custom_shape)
+    resolved_input_shape = _optimization_input_shape(
+        objective,
+        input_shape=input_shape,
+        custom_shape=custom_shape,
+    )
+    if resolved_input_shape[0] != 3:
+        raise ValueError("feature accentuation currently requires RGB model inputs")
+
+    hooked_model, objective_function, objective_names, compiled_shape = objective.compile(
+        input_shape=resolved_input_shape
+    )
+    combinations = compiled_shape[0]
+    if combinations != 1:
+        hooked_model.close()
+        raise AssertionError(
+            "You can only optimize one objective at a time with feature accentuation."
+        )
+
+    device = (
+        torch.device(device)
+        if device is not None
+        else model_device(objective.model)
+    )
+    regularization_capture = None
+    try:
+        objective.model.to(device)
+        if image_parameter is None:
+            image_parameter = FeatureAccentuationCanvas(
+                image=image,
+                height=canvas_height,
+                width=canvas_width,
+                device=device,
+                parameterization=parameterization,
+                magnitude_source=magnitude_source,
+                use_magnitude_gate=use_magnitude_gate,
+                magnitude_gate_init=magnitude_gate_init,
+                desaturation=desaturation,
+                frequency_decay=frequency_decay,
+                color_decorrelate=color_decorrelate,
+                center_crop=center_crop,
+                resize_mode=resize_mode,
+            )
+        elif not isinstance(image_parameter, FeatureAccentuationCanvas):
+            raise TypeError("image_parameter must be a FeatureAccentuationCanvas")
+        else:
+            image_parameter = image_parameter.to(device)
+
+        parameters = [
+            parameter
+            for parameter in image_parameter.parameters()
+            if parameter.requires_grad
+        ]
+        if not parameters:
+            raise ValueError("image_parameter must contain trainable phase/gate parameters")
+        optimizer = _prepare_parameter_optimizer(
+            optimizer,
+            parameters,
+            default_cls=torch.optim.Adam,
+            default_lr=float(learning_rate),
+        )
+        reference = image_parameter.reference_image.detach()
+        transparency = torch.zeros_like(reference[0])
+        checkpoints = {}
+        transparency_checkpoints = {}
+        losses = []
+        target_losses = []
+        regularization_distances = []
+        if regularization_layer is not None:
+            regularization_capture = LayerCapture(
+                resolve_module(objective.model, regularization_layer),
+                clone=True,
+            ).open()
+    except Exception:
+        if regularization_capture is not None:
+            regularization_capture.close()
+        hooked_model.close()
+        raise
+
+    try:
+        with _frozen_eval_model(objective.model):
+            if regularization_strength:
+                candidate = image_parameter()
+                target_loss, regularization_distance = _accentuation_forward(
+                    hooked_model=hooked_model,
+                    objective_function=objective_function,
+                    regularization_capture=regularization_capture,
+                    candidate=candidate,
+                    reference=reference,
+                    nb_crops=nb_crops,
+                    crop_min=crop_min,
+                    crop_max=crop_max,
+                    noise_std=noise_std,
+                    input_size=resolved_input_shape[-2:],
+                    preprocess=preprocess,
+                )
+                regularization_grads = torch.autograd.grad(
+                    regularization_distance,
+                    parameters,
+                    retain_graph=True,
+                    allow_unused=True,
+                )
+                target_grads = torch.autograd.grad(
+                    target_loss,
+                    parameters,
+                    allow_unused=True,
+                )
+                regularization_gradient = _absolute_gradient_sum(regularization_grads)
+                target_gradient = _absolute_gradient_sum(target_grads)
+                if regularization_gradient <= 1e-12:
+                    raise RuntimeError(
+                        "The initial regularization gradient is zero; choose a "
+                        "responsive layer or use the gated fourier_phase parameterization."
+                    )
+                gradient_balance = target_gradient / regularization_gradient
+            else:
+                gradient_balance = 0.0
+
+            for step in range(nb_steps):
+                optimizer.zero_grad(set_to_none=True)
+                candidate = image_parameter()
+                target_loss, regularization_distance = _accentuation_forward(
+                    hooked_model=hooked_model,
+                    objective_function=objective_function,
+                    regularization_capture=regularization_capture,
+                    candidate=candidate,
+                    reference=reference,
+                    nb_crops=nb_crops,
+                    crop_min=crop_min,
+                    crop_max=crop_max,
+                    noise_std=noise_std,
+                    input_size=resolved_input_shape[-2:],
+                    preprocess=preprocess,
+                )
+                full_loss = target_loss + (
+                    float(regularization_strength)
+                    * float(gradient_balance)
+                    * regularization_distance
+                )
+                transparency_loss = (
+                    full_loss if regularizer_in_transparency else target_loss
+                )
+                image_gradient = torch.autograd.grad(
+                    transparency_loss,
+                    candidate,
+                    retain_graph=True,
+                    allow_unused=True,
+                )[0]
+                if image_gradient is None:
+                    raise RuntimeError("the target objective does not depend on the image")
+                transparency = transparency + image_gradient[0].detach().abs()
+                full_loss.backward()
+                if step in checkpoint_steps:
+                    checkpoints[step] = candidate.detach().cpu().clone()
+                    transparency_checkpoints[step] = (
+                        transparency.detach().cpu().clone()
+                    )
+                if grad_clip is not None:
+                    torch.nn.utils.clip_grad_norm_(parameters, float(grad_clip))
+                optimizer.step()
+                losses.append(float(full_loss.detach().cpu()))
+                target_losses.append(float(target_loss.detach().cpu()))
+                regularization_distances.append(
+                    float(regularization_distance.detach().cpu())
+                )
+    finally:
+        if regularization_capture is not None:
+            regularization_capture.close()
+        hooked_model.close()
+
+    return OptimizationResult(
+        image=image_parameter,
+        transparency=transparency.detach(),
+        losses=losses,
+        objective_value=losses[-1],
+        attempt_index=0,
+        metadata={
+            "method": "feature_accentuation",
+            "objective_names": objective_names,
+            "steps": nb_steps,
+            "crops": nb_crops,
+            "gradient_balance": float(gradient_balance),
+            "target_losses": target_losses,
+            "regularization_distances": regularization_distances,
+            "magnitude_source": image_parameter.magnitude_source,
+            "parameterization": image_parameter.parameterization,
+            "checkpoint_steps": sorted(checkpoints),
+        },
+        checkpoints=checkpoints,
+        transparency_checkpoints=transparency_checkpoints,
+    )
+
+
+def _accentuation_forward(
+    hooked_model,
+    objective_function,
+    regularization_capture,
+    candidate,
+    reference,
+    nb_crops,
+    crop_min,
+    crop_max,
+    noise_std,
+    input_size,
+    preprocess,
+):
+    transformed = feature_accentuation_transforms(
+        candidate,
+        reference,
+        output_size=input_size,
+        crops=nb_crops,
+        crop_min=crop_min,
+        crop_max=crop_max,
+        noise_std=noise_std,
+    )
+    model_inputs = transformed if preprocess is None else preprocess(transformed)
+    if regularization_capture is not None:
+        regularization_capture.clear()
+    target_outputs = hooked_model(model_inputs)
+    # ``Objective.compile`` returns an ascent score (the convention shared by
+    # classical rendering and MaCo). Faccent minimizes a negative target. Its
+    # default objective sees both transformed pair members; the reference half
+    # is constant but is retained here for exact gradient scaling/parity.
+    target_loss = -torch.mean(objective_function(target_outputs))
+    if regularization_capture is None:
+        regularization_distance = target_loss.new_zeros(())
+    else:
+        regularization_output = _split_accentuation_pairs(
+            regularization_capture.tensor_output(),
+            nb_crops,
+        )
+        difference = regularization_output[:, 0] - regularization_output[:, 1]
+        if difference.ndim < 2:
+            raise ValueError("regularization layer output must include a feature axis")
+        regularization_distance = torch.linalg.vector_norm(
+            difference,
+            ord=2,
+            dim=1,
+        ).mean()
+    return target_loss, regularization_distance
+
+
+def _split_accentuation_pairs(output, nb_crops):
+    if output.shape[0] != nb_crops * 2:
+        raise ValueError(
+            "model output batch does not match the candidate/reference crop layout"
+        )
+    return output.reshape(nb_crops, 2, *output.shape[1:])
+
+
+def _absolute_gradient_sum(gradients):
+    return sum(
+        float(gradient.detach().abs().sum().cpu())
+        for gradient in gradients
+        if gradient is not None
+    )
+
+
+def _prepare_parameter_optimizer(optimizer, parameters, default_cls, default_lr):
+    parameters = list(parameters)
+    if optimizer is None:
+        return default_cls(parameters, lr=default_lr)
+    if isinstance(optimizer, torch.optim.Optimizer):
+        if not optimizer.param_groups:
+            raise ValueError("optimizer must have at least one parameter group")
+        optimizer.state.clear()
+        optimizer.param_groups[0]["params"] = parameters
+        for group in optimizer.param_groups[1:]:
+            group["params"] = []
+        return optimizer
+    if callable(optimizer):
+        try:
+            candidate = optimizer(parameters, lr=default_lr)
+        except TypeError as first_error:
+            try:
+                candidate = optimizer(parameters)
+            except TypeError:
+                raise TypeError(
+                    "optimizer callables must accept an iterable of parameters"
+                ) from first_error
+        if not isinstance(candidate, torch.optim.Optimizer):
+            raise TypeError("optimizer callable must return torch.optim.Optimizer")
+        return candidate
+    raise TypeError("optimizer must be a torch optimizer, factory/class, or None")
 
 
 def maco(

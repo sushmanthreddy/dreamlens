@@ -4,10 +4,17 @@ __pycache__/
 .torch-cache/
 .mypy_cache/
 .ruff_cache/
+.firecrawl/
+.idea/
 .venv/
 venv/
+uv.lock
+faccent_public-*/
 build/
 dist/
 *.egg-info/
 data/
+!src/dreamlens/data/
+!src/dreamlens/data/README.md
+!src/dreamlens/data/clean_decorrelated.npy
 .DS_Store

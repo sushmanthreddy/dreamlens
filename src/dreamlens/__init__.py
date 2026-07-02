@@ -8,6 +8,7 @@ from .atlas import (
 from .activations import collect_activations
 from .feature_visualizer import FeatureVisualizer
 from .image_parameters import (
+    FeatureAccentuationCanvas,
     FourierCanvas,
     FourierCanvasBatch,
     CanvasBatch,
@@ -17,11 +18,13 @@ from .image_parameters import (
     ReferenceMaskedCanvas,
     PixelCanvas,
     MaskedCanvas,
+    decorrelate_colors,
     fft_2d_freq,
     fft_image,
     fft_to_rgb,
     get_fft_scale,
     init_maco_buffer,
+    load_imagenet_spectrum,
     maco_image_parametrization,
     recorrelate_colors,
     to_valid_grayscale,
@@ -48,10 +51,12 @@ from .objectives import (
 )
 from .optimization import (
     AmplifyConfig,
+    FeatureAccentuationConfig,
     MacoConfig,
     OptimizationResult,
     RenderConfig,
     TransformConfig,
+    feature_accentuation,
     maco,
     maco_optimisation_step,
     optimize,
@@ -64,6 +69,7 @@ from .preprocessing import (
 from .render import ImageParameterization, render_channels, render_icons, render_neurons
 from .transforms import (
     compose_transformations,
+    feature_accentuation_transforms,
     generate_standard_transformations,
     pad,
     random_blur,
@@ -73,9 +79,14 @@ from .transforms import (
     random_scale,
 )
 
+__version__ = "0.1.0"
+
 __all__ = [
+    "__version__",
     "ActivationTranslation",
     "AmplifyConfig",
+    "FeatureAccentuationCanvas",
+    "FeatureAccentuationConfig",
     "FourierCanvas",
     "FourierCanvasBatch",
     "CanvasBatch",
@@ -108,12 +119,16 @@ __all__ = [
     "compose_transformations",
     "cosine_similarity",
     "dot_cossim",
+    "decorrelate_colors",
+    "feature_accentuation",
+    "feature_accentuation_transforms",
     "fft_2d_freq",
     "fft_image",
     "fft_to_rgb",
     "generate_standard_transformations",
     "get_fft_scale",
     "init_maco_buffer",
+    "load_imagenet_spectrum",
     "mean_activation_objective",
     "feature_target",
     "identity_preprocess",

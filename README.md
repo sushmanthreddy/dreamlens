@@ -10,13 +10,15 @@ The main workflows share one root `FeatureVisualizer`:
 | --- | --- |
 | `visualize(..., method="maximize")` | What image makes a layer, channel, neuron, class, or direction respond strongly? |
 | `visualize(..., method="maco")` | What does the same target look like with natural-image magnitude fixed and phase optimized? |
+| `visualize(..., method="feature_accentuation")` | What in this natural image drives a target, and how can it be revealed while preserving earlier features? |
 | `visualize(..., method="caricature")` | What features does the model see in an original image, and how can they be amplified? |
 | `activation_atlas()` | What feature groups appear across many real images? |
 
 The root package also preserves the complete native-PyTorch feature-
 visualization surface: composable compatibility objectives, Fourier/pixel
-optimization, MaCo, stochastic transforms, regularizers, losses, and
-preconditioning helpers. There is no parallel feature-visualization subpackage.
+optimization, MaCo, Faccent feature accentuation, stochastic transforms,
+regularizers, losses, and preconditioning helpers. There is no parallel
+feature-visualization subpackage.
 
 ## Setup
 
@@ -33,11 +35,12 @@ the first time they are used.
 
 | Notebook | What it teaches | Saved output |
 | --- | --- | --- |
-| [`Feature_Visualization_Getting_started_PyTorch.ipynb`](examples/Feature_Visualization_Getting_started_PyTorch.ipynb) | One root API for all targets, classical maximize, MaCo, and caricature | `results/feature_visualization_getting_started_pytorch/` |
-| [`learn_dreamlens_maximize.ipynb`](examples/learn_dreamlens_maximize.ipynb) | Target, render config, Fourier canvas, optimization, score evaluation | `learning_outputs/dreamlens_maximize_notebook/` |
-| [`learn_dreamlens_maco.ipynb`](examples/learn_dreamlens_maco.ipynb) | Fixed magnitude, trainable phase, crop schedules, and transparency maps | `learning_outputs/dreamlens_maco_notebook/` |
-| [`learn_dreamlens_caricature.ipynb`](examples/learn_dreamlens_caricature.ipynb) | Original/generated paths, paired transforms, feature amplification | `learning_outputs/dreamlens_caricature_notebook/` |
-| [`native_dreamlens_results.ipynb`](examples/native_dreamlens_results.ipynb) | Complete reproducible gallery with multiple channels and caricatures | `results/native_dreamlens_notebook/` |
+| [`Feature_Visualization_Getting_started_PyTorch.ipynb`](https://github.com/sushmanthreddy/dreamlens/blob/main/examples/Feature_Visualization_Getting_started_PyTorch.ipynb) | One root API for all targets, classical maximize, MaCo, and caricature | `results/feature_visualization_getting_started_pytorch/` |
+| [`learn_dreamlens_maximize.ipynb`](https://github.com/sushmanthreddy/dreamlens/blob/main/examples/learn_dreamlens_maximize.ipynb) | Target, render config, Fourier canvas, optimization, score evaluation | `learning_outputs/dreamlens_maximize_notebook/` |
+| [`learn_dreamlens_maco.ipynb`](https://github.com/sushmanthreddy/dreamlens/blob/main/examples/learn_dreamlens_maco.ipynb) | Fixed magnitude, trainable phase, crop schedules, and transparency maps | `learning_outputs/dreamlens_maco_notebook/` |
+| [`learn_dreamlens_feature_accentuation.ipynb`](https://github.com/sushmanthreddy/dreamlens/blob/main/examples/learn_dreamlens_feature_accentuation.ipynb) | Torchvision ResNet18, image-seeded feature accentuation, paired crops, gradient balancing, and preservation | `results/dreamlens_feature_accentuation_notebook/` |
+| [`learn_dreamlens_caricature.ipynb`](https://github.com/sushmanthreddy/dreamlens/blob/main/examples/learn_dreamlens_caricature.ipynb) | Original/generated paths, paired transforms, feature amplification | `learning_outputs/dreamlens_caricature_notebook/` |
+| [`native_dreamlens_results.ipynb`](https://github.com/sushmanthreddy/dreamlens/blob/main/examples/native_dreamlens_results.ipynb) | Complete reproducible gallery with multiple channels and caricatures | `results/native_dreamlens_notebook/` |
 
 To use a learning notebook:
 
@@ -52,7 +55,7 @@ inspect the expected result before rerunning them.
 
 ## Verified maximize result
 
-<img src="learning_outputs/dreamlens_maximize_notebook/layer2_1_conv2_channel_17.png" width="320" alt="DreamLens channel 17 maximization result">
+<img src="https://raw.githubusercontent.com/sushmanthreddy/dreamlens/main/learning_outputs/dreamlens_maximize_notebook/layer2_1_conv2_channel_17.png" width="320" alt="DreamLens channel 17 maximization result">
 
 | Setting or measurement | Value |
 | --- | ---: |
@@ -69,8 +72,8 @@ image produces more spatial activation values.
 ## Verified caricature result
 
 <p>
-  <img src="learning_inputs/dog_160.png" width="220" alt="Original dog input">
-  <img src="learning_outputs/dreamlens_caricature_notebook/dog_layer3_caricature.png" width="220" alt="DreamLens dog caricature result">
+  <img src="https://raw.githubusercontent.com/sushmanthreddy/dreamlens/main/learning_inputs/dog_160.png" width="220" alt="Original dog input">
+  <img src="https://raw.githubusercontent.com/sushmanthreddy/dreamlens/main/learning_outputs/dreamlens_caricature_notebook/dog_layer3_caricature.png" width="220" alt="DreamLens dog caricature result">
 </p>
 
 | Setting or measurement | Value |
@@ -85,13 +88,58 @@ image produces more spatial activation values.
 The original image is a fixed feature reference. The generated image starts
 from Fourier noise and is optimized separately; it is not a normal image filter.
 
+## Verified feature-accentuation result
+
+DreamLens includes a separate native PyTorch implementation of Hamblin et al.,
+[“Feature Accentuation: Revealing 'What' Features Respond to in Natural
+Images”](https://arxiv.org/abs/2402.10039). Faccent starts from the natural
+image itself, applies identical stochastic crops/noise to the candidate and
+reference, and balances target maximization against L2 preservation at an
+explicit earlier layer.
+
+<img src="https://raw.githubusercontent.com/sushmanthreddy/dreamlens/main/results/dreamlens_feature_accentuation_notebook/torchvision_resnet18_feature_accentuation_examples.png" width="100%" alt="DreamLens native PyTorch feature accentuation with torchvision ResNet18 on iguana and fox images">
+
+| Setting or measurement | Executed notebook result |
+| --- | ---: |
+| Model / targets | torchvision ResNet18 / loggerhead class 33 and castle class 483 |
+| Source images | `learning_inputs/iguana.jpg` and `learning_inputs/fox.jpg` |
+| Preservation layer | `layer2.1` |
+| Canvas / model input | `512 × 512` / `224 × 224` |
+| Steps / paired crops per step | `99` / `16` |
+| Parameterization | Faccent full-complex seeded Fourier (default) |
+| Gradient balance | `9.7570873578` (iguana), `6.8875874332` (fox) |
+| Final target loss | `-50.7389` (iguana), `-29.1070` (fox) |
+
+The middle column is the raw optimized Fourier canvas. The right column is
+what Faccent actually plots: globally contrast-normalized RGB with accumulated
+absolute target gradients used as a clipped, blurred alpha mask. Use
+`result.save_accentuation(...)` for that view; `result.save(...)` intentionally
+writes the raw canvas.
+
+This is not the existing caricature algorithm. Caricature learns a separate
+noise-seeded image that amplifies the input's captured feature direction.
+Feature accentuation is image-seeded, maximizes an explicit `FeatureTarget`,
+and preserves an explicit layer with gradient-balanced regularization.
+
+Faccent's optional `parameterization="fourier_phase"` is also implemented. It
+optimizes phase plus a sigmoid magnitude gate. `magnitude_source="image"`
+uses the seed magnitude; `magnitude_source="imagenet"` uses the same packaged
+`clean_decorrelated.npy` natural-image spectrum as default MaCo. Faccent's
+reference default remains `parameterization="fourier"`, where every
+preconditioned complex Fourier coefficient is trainable.
+
 ## Minimal API example
 
 ```python
 from torchvision.models import ResNet18_Weights, resnet18
 
 from dreamlens import FeatureTarget, FeatureVisualizer
-from dreamlens import MacoConfig, RenderConfig, TransformConfig
+from dreamlens import (
+    FeatureAccentuationConfig,
+    MacoConfig,
+    RenderConfig,
+    TransformConfig,
+)
 
 model = resnet18(weights=ResNet18_Weights.DEFAULT).eval()
 visualizer = FeatureVisualizer(model, device="cpu", normalize=True)
@@ -136,11 +184,27 @@ maco_result = visualizer.visualize(
 )
 maco_result.save("channel_17_maco.png")
 maco_result.save_transparency("channel_17_importance.png")
+
+# Feature accentuation starts from a real image and requires an explicit
+# preservation layer when regularization_strength is non-zero.
+accentuated = visualizer.visualize(
+    FeatureTarget.for_class(258, layer="fc"),
+    method="feature_accentuation",
+    image="dog.jpg",
+    regularization_layer="layer2.1.conv2",
+    config=FeatureAccentuationConfig(
+        steps=99,
+        crops=16,
+        checkpoint_steps=(0, 20, 40, 60, 80, 98),
+    ),
+)
+accentuated.save_accentuation("feature_accentuation.png", checkpoint=98)
+accentuated.save_transparency("feature_accentuation_importance.png")
 ```
 
 ## One target model
 
-`FeatureTarget` is shared by classical maximize and MaCo:
+`FeatureTarget` is shared by classical maximize, MaCo, and feature accentuation:
 
 ```python
 import torch
@@ -171,7 +235,7 @@ statistics without using a learned generative prior. DreamLens also accumulates
 the absolute input gradient during optimization and returns it as the spatial
 importance/transparency map described in the paper.
 
-<img src="results/feature_visualization_getting_started_pytorch/root_maco_toucan_panel.png" width="100%" alt="Root DreamLens native PyTorch MaCo Toucan feature visualization, spatial importance map, and overlay">
+<img src="https://raw.githubusercontent.com/sushmanthreddy/dreamlens/main/results/feature_visualization_getting_started_pytorch/root_maco_toucan_panel.png" width="100%" alt="Root DreamLens native PyTorch MaCo Toucan feature visualization, spatial importance map, and overlay">
 
 | Setting | Executed notebook result |
 | --- | ---: |
@@ -217,18 +281,18 @@ transparency = result.transparency_chw()
 
 This implementation is PyTorch end to end: phase reconstruction uses
 `torch.fft`, crops use differentiable `torch.nn.functional.grid_sample`, and
-optimization uses `torch.optim.NAdam`. With no `maco_dataset`, DreamLens uses a
-cached ImageNet magnitude or attempts the upstream reference download. For
-reproducible offline runs, pass a representative NCHW dataset; the notebooks
-use the checked-in high-resolution
+optimization uses `torch.optim.NAdam`. With no `maco_dataset`, DreamLens uses
+the packaged Faccent/ImageNet natural magnitude, so the default path works
+offline. To use a different image domain, pass a representative NCHW dataset;
+the MaCo notebooks use the checked-in high-resolution
 [PyTorch Hub dog photograph](https://github.com/pytorch/hub/blob/master/images/dog.jpg).
 Grayscale MaCo always requires a dataset.
 
-See [`docs/FEATURE_VISUALIZATION_API.md`](docs/FEATURE_VISUALIZATION_API.md)
+See [`docs/FEATURE_VISUALIZATION_API.md`](https://github.com/sushmanthreddy/dreamlens/blob/main/docs/FEATURE_VISUALIZATION_API.md)
 for the complete root API and tensor conventions.
 
 The executed self-contained PyTorch API tutorial is
-[`Feature_Visualization_Getting_started_PyTorch.ipynb`](examples/Feature_Visualization_Getting_started_PyTorch.ipynb).
+[`Feature_Visualization_Getting_started_PyTorch.ipynb`](https://github.com/sushmanthreddy/dreamlens/blob/main/examples/Feature_Visualization_Getting_started_PyTorch.ipynb).
 It uses only root `dreamlens` imports, loads a pretrained torchvision ResNet18,
 and runs classical maximize, MaCo, and caricature directly in its cells. It
 saves the images and comparison panels under
@@ -254,9 +318,9 @@ directly from coefficients.
 
 ## More information
 
-- Public package code: [`src/dreamlens/`](src/dreamlens/)
+- Public package code: [`src/dreamlens/`](https://github.com/sushmanthreddy/dreamlens/tree/main/src/dreamlens)
 - Full API and capability guide:
-  [`docs/DREAMLENS_FEATURE_GUIDE.md`](docs/DREAMLENS_FEATURE_GUIDE.md)
+  [`docs/DREAMLENS_FEATURE_GUIDE.md`](https://github.com/sushmanthreddy/dreamlens/blob/main/docs/DREAMLENS_FEATURE_GUIDE.md)
 
 Run the smoke tests with:
 
