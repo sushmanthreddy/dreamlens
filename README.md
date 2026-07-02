@@ -1,5 +1,9 @@
 # DreamLens
 
+[![PyPI version](https://img.shields.io/pypi/v/dreamlens.svg)](https://pypi.org/project/dreamlens/)
+[![Python versions](https://img.shields.io/pypi/pyversions/dreamlens.svg)](https://pypi.org/project/dreamlens/)
+[![License](https://img.shields.io/pypi/l/dreamlens.svg)](https://github.com/sushmanthreddy/dreamlens/blob/main/LICENSE)
+
 DreamLens is a native PyTorch toolkit for understanding what neural-network
 layers respond to. It keeps the pretrained model fixed and optimizes generated
 images using feedback from internal activations.
@@ -20,7 +24,40 @@ optimization, MaCo, Faccent feature accentuation, stochastic transforms,
 regularizers, losses, and preconditioning helpers. There is no parallel
 feature-visualization subpackage.
 
-## Setup
+## Installation
+
+Install the published package from [PyPI](https://pypi.org/project/dreamlens/):
+
+```bash
+python -m pip install dreamlens
+```
+
+With [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv add dreamlens
+```
+
+Optional dependencies are grouped by workflow:
+
+```bash
+# Torchvision models and notebook plotting
+python -m pip install "dreamlens[examples]"
+
+# UMAP-based activation atlases
+python -m pip install "dreamlens[atlas]"
+
+# Everything used by the examples and atlases
+python -m pip install "dreamlens[examples,atlas]"
+```
+
+Confirm the installed version:
+
+```bash
+python -c "import dreamlens; print(dreamlens.__version__)"
+```
+
+### Install from source
 
 From the repository root:
 
