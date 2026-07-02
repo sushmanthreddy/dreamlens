@@ -52,7 +52,6 @@ dev = [
 
 [project.urls]
 Homepage = "https://github.com/sushmanthreddy/dreamlens"
-Documentation = "https://github.com/sushmanthreddy/dreamlens/tree/main/docs"
 Repository = "https://github.com/sushmanthreddy/dreamlens.git"
 Issues = "https://github.com/sushmanthreddy/dreamlens/issues"
 
@@ -60,4 +59,4 @@ Issues = "https://github.com/sushmanthreddy/dreamlens/issues"
 where = ["src"]
 
 [tool.setuptools.package-data]
-dreamlens = ["data/*.npy", "data/*.md"]
+dreamlens = ["data/*.npy"]

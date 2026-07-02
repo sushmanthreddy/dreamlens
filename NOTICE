@@ -45,15 +45,21 @@ Data and example assets
 
 - src/dreamlens/data/clean_decorrelated.npy is the natural-image Fourier
   magnitude used by DreamLens MaCo and optional phase-based feature
-  accentuation. Its upstream location is recorded in
-  src/dreamlens/data/README.md. This data asset is not relicensed by the
-  DreamLens Apache-2.0 license.
+  accentuation. It was obtained from:
+  https://storage.googleapis.com/serrelab/loupe/spectrums/imagenet_decorrelated.npy
+  SHA-256: a4810ea049ef9a0fe4e3f26660188e53222281879b333e8fd61377f7491aafc8
+  This data asset is not relicensed by the DreamLens Apache-2.0 license.
 
 - learning_inputs/iguana.jpg and learning_inputs/fox.jpg are repository-only
   tutorial inputs sourced from the public Faccent example directory. The
   source repository does not separately identify their photographer or image
   license. They are excluded from the PyPI distributions and are not covered
-  by the DreamLens Apache-2.0 license. See learning_inputs/README.md.
+  by the DreamLens Apache-2.0 license. Source:
+  https://github.com/chrishamblin7/faccent/tree/main/test_images
+  iguana.jpg SHA-256:
+  976980e1e49b15a1a87f9ff22c40ca66f8166bcd1b09807b5220af6f2df1602a
+  fox.jpg SHA-256:
+  cc908e850f84f7363e67712d697f8d10a6ea94db6e7b9ff61d1eccf9de92a01e
 
 Third-party model weights, datasets, images, names, and publications remain
 subject to their respective owners' terms. Educational or research intent does
