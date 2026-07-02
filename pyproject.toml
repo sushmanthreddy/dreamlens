@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dreamlens"
-version = "0.1.0"
+version = "0.1.1"
 description = "PyTorch tools for activation atlases, feature visualization, and image amplification."
 readme = "README.md"
 requires-python = ">=3.9"
