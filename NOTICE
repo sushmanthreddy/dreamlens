@@ -1,0 +1,62 @@
+DreamLens
+Copyright 2026 DreamLens Contributors
+
+DreamLens's original source code is licensed under the Apache License, Version
+2.0, as provided in LICENSE. This NOTICE records research provenance and
+third-party materials; it does not replace or expand any third-party license.
+
+Research foundations
+--------------------
+
+1. Chris Olah, Alexander Mordvintsev, and Ludwig Schubert, "Feature
+   Visualization," Distill, 2017.
+   https://distill.pub/2017/feature-visualization/
+
+2. Thomas Fel, Thibaut Boissin, Victor Boutin, Agustin Picard, Paul Novello,
+   Julien Colin, Drew Linsley, Tom Rousseau, Remi Cadene, Lore Goetschalckx,
+   Laurent Gardes, and Thomas Serre, "Unlocking Feature Visualization for Deep
+   Network with MAgnitude Constrained Optimization," NeurIPS, 2023.
+   https://proceedings.neurips.cc/paper_files/paper/2023/hash/76d2f8e328e1081c22a77ca0fa330ca5-Abstract-Conference.html
+
+3. Chris Hamblin, Thomas Fel, Srijani Saha, Talia Konkle, and George Alvarez,
+   "Feature Accentuation: Revealing 'What' Features Respond to in Natural
+   Images," arXiv:2402.10039, 2024.
+   https://arxiv.org/abs/2402.10039
+
+DreamLens is an independent educational and research implementation. It is not
+an official implementation of, endorsed by, or affiliated with the authors,
+their institutions, Distill, NeurIPS, or arXiv. Research concepts are cited;
+paper text and figures are not redistributed by the Python package.
+
+Software acknowledgements
+-------------------------
+
+- Lucent (Apache-2.0): https://github.com/greentfrapp/lucent
+- Xplique (Apache-2.0): https://github.com/deel-ai/xplique
+- Faccent (MIT, as stated by its repository):
+  https://github.com/chrishamblin7/faccent
+- PyTorch and torchvision: https://pytorch.org/
+
+DreamLens does not import Lucent, Xplique, or Faccent at runtime. Their names
+identify research/reference software and do not imply endorsement.
+
+Data and example assets
+-----------------------
+
+- src/dreamlens/data/clean_decorrelated.npy is the natural-image Fourier
+  magnitude used by DreamLens MaCo and optional phase-based feature
+  accentuation. Its upstream location is recorded in
+  src/dreamlens/data/README.md. This data asset is not relicensed by the
+  DreamLens Apache-2.0 license.
+
+- learning_inputs/iguana.jpg and learning_inputs/fox.jpg are repository-only
+  tutorial inputs sourced from the public Faccent example directory. The
+  source repository does not separately identify their photographer or image
+  license. They are excluded from the PyPI distributions and are not covered
+  by the DreamLens Apache-2.0 license. See learning_inputs/README.md.
+
+Third-party model weights, datasets, images, names, and publications remain
+subject to their respective owners' terms. Educational or research intent does
+not by itself waive copyright, trademark, patent, privacy, or license
+obligations. Users and redistributors are responsible for confirming that
+their use complies with applicable terms and law.

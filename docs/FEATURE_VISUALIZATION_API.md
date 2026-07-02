@@ -13,6 +13,29 @@ the existing caricature path. Together they cover classical maximize, MaCo,
 feature accentuation, and caricature without
 switching objective systems.
 
+## Research provenance
+
+The unified Python API is an independent native-PyTorch implementation informed
+by three research lines:
+
+1. Olah, Mordvintsev, and Schubert, [“Feature Visualization” (Distill,
+   2017)](https://distill.pub/2017/feature-visualization/) for activation
+   maximization, objectives, parameterization, transformations, and
+   regularization.
+2. Fel et al., [“Unlocking Feature Visualization for Deep Network with
+   MAgnitude Constrained Optimization” (NeurIPS
+   2023)](https://proceedings.neurips.cc/paper_files/paper/2023/hash/76d2f8e328e1081c22a77ca0fa330ca5-Abstract-Conference.html)
+   for fixed-magnitude, optimized-phase MaCo and spatial importance.
+3. Hamblin et al., [“Feature Accentuation: Revealing 'What' Features Respond
+   to in Natural Images”
+   (2024)](https://arxiv.org/abs/2402.10039) for image-seeded visualization,
+   paired augmentation, and feature-preserving regularization.
+
+DreamLens is intended for education and research and is not affiliated with
+the paper authors or publishers. Apache-2.0 covers DreamLens's original code;
+third-party papers, software, weights, datasets, and images retain their own
+copyright and license terms. See the repository `NOTICE`.
+
 ## Class-first API
 
 ```python
@@ -264,8 +287,8 @@ loggerhead and castle runs produce gradient balances of `9.7570873578` and
 ## MaCo
 
 DreamLens implements MaCo from Fel et al., [“Unlocking Feature Visualization
-for Deeper Networks with MAgnitude Constrained
-Optimization”](https://arxiv.org/abs/2306.06805), natively in PyTorch. The
+for Deep Network with MAgnitude Constrained
+Optimization”](https://proceedings.neurips.cc/paper_files/paper/2023/hash/76d2f8e328e1081c22a77ca0fa330ca5-Abstract-Conference.html), natively in PyTorch. The
 Fourier magnitude remains fixed, the phase is optimized, and the accumulated
 absolute image gradient is returned as a spatial-importance map.
 

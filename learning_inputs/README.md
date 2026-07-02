@@ -10,4 +10,9 @@ files:
 Source: <https://github.com/chrishamblin7/faccent/tree/main/test_images>
 
 Only the photographs are retained as example inputs. DreamLens does not import
-the Faccent package or its model implementation.
+the Faccent package or its model implementation. The source repository states
+an MIT license for its software but does not separately identify a photographer
+or license for these two photographs. They are therefore not covered by the
+DreamLens Apache-2.0 license and are not included in the PyPI wheel or source
+distribution. Downstream redistributors should verify the image rights or
+replace them with appropriately licensed examples.

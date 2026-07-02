@@ -8,6 +8,19 @@ DreamLens is a native PyTorch toolkit for understanding what neural-network
 layers respond to. It keeps the pretrained model fixed and optimizes generated
 images using feedback from internal activations.
 
+DreamLens presents three related research directions through one Python API,
+`FeatureVisualizer`, implemented natively with PyTorch:
+
+| Research foundation | Idea used in DreamLens | Single-API entry point |
+| --- | --- | --- |
+| Olah, Mordvintsev, and Schubert, [“Feature Visualization” (Distill, 2017)](https://distill.pub/2017/feature-visualization/) | Activation maximization, objectives, Fourier/pixel parameterization, transformations, and regularization | `visualize(..., method="maximize")` |
+| Fel et al., [“Unlocking Feature Visualization for Deep Network with MAgnitude Constrained Optimization” (NeurIPS 2023)](https://proceedings.neurips.cc/paper_files/paper/2023/hash/76d2f8e328e1081c22a77ca0fa330ca5-Abstract-Conference.html) | MaCo fixed-magnitude/optimized-phase visualization and spatial importance | `visualize(..., method="maco")` |
+| Hamblin et al., [“Feature Accentuation: Revealing 'What' Features Respond to in Natural Images” (2024)](https://arxiv.org/abs/2402.10039) | Image-seeded visualization with paired augmentation and feature-preserving regularization | `visualize(..., method="feature_accentuation")` |
+
+DreamLens is an independent educational and research implementation. It is not
+an official implementation of, or affiliated with, the authors or publishers
+of those works. It does not require their Python packages at runtime.
+
 The main workflows share one root `FeatureVisualizer`:
 
 | Workflow | Question |
@@ -23,6 +36,17 @@ visualization surface: composable compatibility objectives, Fourier/pixel
 optimization, MaCo, Faccent feature accentuation, stochastic transforms,
 regularizers, losses, and preconditioning helpers. There is no parallel
 feature-visualization subpackage.
+
+### Copyright and third-party material
+
+The Apache-2.0 license applies to DreamLens's original source code. It does not
+grant rights to third-party papers, reference implementations, model weights,
+datasets, trademarks, or photographs. Those materials remain subject to their
+respective owners' terms. “Educational use” does not automatically waive
+copyright or license requirements; users are responsible for checking the
+terms that apply to any external model, data, image, or publication they use.
+See the packaged [NOTICE](https://github.com/sushmanthreddy/dreamlens/blob/main/NOTICE)
+for research citations, software acknowledgements, and asset provenance.
 
 ## Installation
 
@@ -263,8 +287,8 @@ available for backward compatibility, but is not required by the root workflow.
 
 DreamLens includes a native PyTorch implementation of **MaCo (MAgnitude
 Constrained Optimization)** from Fel et al.,
-[“Unlocking Feature Visualization for Deeper Networks with MAgnitude
-Constrained Optimization” (NeurIPS 2023)](https://arxiv.org/abs/2306.06805).
+[“Unlocking Feature Visualization for Deep Network with MAgnitude Constrained
+Optimization” (NeurIPS 2023)](https://proceedings.neurips.cc/paper_files/paper/2023/hash/76d2f8e328e1081c22a77ca0fa330ca5-Abstract-Conference.html).
 
 MaCo keeps a natural-image Fourier magnitude spectrum fixed and optimizes only
 its phase. This constrains the generated visualization toward natural-image
